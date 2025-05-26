@@ -829,10 +829,10 @@ st.markdown("<br><br>", unsafe_allow_html=True), col5 = st.columns(5)
         else:
             st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
 
-# Enhanced View Surveys Page (keeping existing functionality)
-elif st.session_state.page == "view_surveys":
-    st.markdown("## 👁️ Enhanced View Surveys")
-    st.markdown("*Browse and analyze your SurveyMonkey surveys with categorization*")
+# Enhanced Configure Survey Page with Governance
+elif st.session_state.page == "configure_survey":
+    st.markdown("## ⚙️ Enhanced Configure Survey")
+    st.markdown("*Match survey questions with UIDs using advanced semantic matching and governance rules*")
     
     try:
         token = st.secrets.get("surveymonkey", {}).get("token", None)
@@ -840,58 +840,43 @@ elif st.session_state.page == "view_surveys":
             st.markdown('<div class="warning-card">❌ SurveyMonkey token is missing in secrets configuration.</div>', unsafe_allow_html=True)
             st.stop()
             
-        with st.spinner("🔄 Fetching surveys from SurveyMonkey..."):
+        with st.spinner("🔄 Fetching surveys..."):
             surveys = get_surveys(token)
             
         if not surveys:
             st.markdown('<div class="warning-card">⚠️ No surveys found or invalid API response.</div>', unsafe_allow_html=True)
         else:
-            # Enhanced survey metrics with categorization
-            survey_categories = [categorize_survey(s.get('title', '')) for s in surveys]
-            category_counts = pd.Series(survey_categories).value_counts()
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("📊 Total Surveys", len(surveys))
-            with col2:
-                recent_surveys = [s for s in surveys if s.get('date_created', '').startswith('2024') or s.get('date_created', '').startswith('2025')]
-                st.metric("🆕 Recent (2024-2025)", len(recent_surveys))
-            with col3:
-                st.metric("📊 Categories", len(category_counts))
-            with col4:
-                most_common_category = category_counts.index[0] if not category_counts.empty else "None"
-                st.metric("🏆 Top Category", most_common_category)
-            
-            # Category breakdown
-            if not category_counts.empty:
-                st.markdown("### 📊 Survey Categories")
-                category_cols = st.columns(min(4, len(category_counts)))
-                for i, (category, count) in enumerate(category_counts.head(4).items()):
-                    with category_cols[i]:
-                        st.metric(f"📋 {category}", count)
-            
-            st.markdown("---")
-            
-            # Enhanced survey selection interface
             choices = {s["title"]: s["id"] for s in surveys}
             survey_id_title_choices = [f"{s['id']} - {s['title']}" for s in surveys]
             survey_id_title_choices.sort(key=lambda x: int(x.split(" - ")[0]), reverse=True)
             
             col1, col2 = st.columns(2)
             with col1:
-                selected_survey = st.selectbox("🎯 Choose Survey by Title", [""] + list(choices.keys()), index=0)
+                selected_survey = st.selectbox("🎯 Choose Survey", [""] + list(choices.keys()), index=0)
             with col2:
                 selected_survey_ids = st.multiselect(
-                    "📋 Select Multiple Surveys (ID/Title)",
+                    "📋 SurveyID/Title",
                     survey_id_title_choices,
                     default=[],
                     help="Select one or more surveys by ID and title"
                 )
             
-            # Category filter
-            category_filter = st.selectbox("📊 Filter by Category", ["All"] + sorted(category_counts.index.tolist()))
+            # Enhanced matching options
+            st.markdown("### ⚙️ Enhanced Matching Configuration")
+            col1, col2, col3 = st.columns(3)
             
-            # Process selected surveys
+            with col1:
+                use_semantic_matching = st.checkbox("🧠 Enable Semantic Matching", value=True)
+                semantic_threshold = st.slider("Semantic Threshold", 0.5, 0.95, SEMANTIC_THRESHOLD, 0.05)
+            
+            with col2:
+                enforce_governance = st.checkbox("⚖️ Enforce Governance Rules", value=True)
+                max_variations = st.number_input("Max Variations per UID", 1, 100, UID_GOVERNANCE['max_variations_per_uid'])
+            
+            with col3:
+                auto_resolve_conflicts = st.checkbox("🔧 Auto-Resolve Conflicts", value=False)
+                quality_threshold = st.slider("Quality Threshold", 0.0, 20.0, UID_GOVERNANCE['quality_score_threshold'], 0.5)
+            
             selected_survey_ids_from_title = []
             if selected_survey:
                 selected_survey_ids_from_title.append(choices[selected_survey])
@@ -900,98 +885,127 @@ elif st.session_state.page == "view_surveys":
                 s.split(" - ")[0] for s in selected_survey_ids
             ]))
             
-            # Apply category filter
-            if category_filter != "All":
-                filtered_surveys = [s for s in surveys if categorize_survey(s.get('title', '')) == category_filter]
-                if not all_selected_survey_ids:  # If no specific surveys selected, show all in category
-                    all_selected_survey_ids = [s['id'] for s in filtered_surveys]
-            
             if all_selected_survey_ids:
                 combined_questions = []
                 progress_bar = st.progress(0)
                 
                 for i, survey_id in enumerate(all_selected_survey_ids):
-                    with st.spinner(f"🔄 Fetching survey questions for ID {survey_id}..."):
+                    with st.spinner(f"🔄 Processing survey {survey_id}..."):
                         survey_json = get_survey_details(survey_id, token)
                         questions = extract_questions(survey_json)
                         combined_questions.extend(questions)
                     progress_bar.progress((i + 1) / len(all_selected_survey_ids))
-                
+            
                 st.session_state.df_target = pd.DataFrame(combined_questions)
                 
                 if st.session_state.df_target.empty:
                     st.markdown('<div class="warning-card">⚠️ No questions found in the selected survey(s).</div>', unsafe_allow_html=True)
                 else:
-                    # Enhanced analysis metrics
-                    st.markdown("### 📊 Enhanced Survey Analysis")
-                    
-                    col1, col2, col3, col4, col5 = st.columns(5)
-                    with col1:
-                        total_questions = len(st.session_state.df_target[st.session_state.df_target["is_choice"] == False])
-                        st.metric("❓ Questions", total_questions)
-                    with col2:
-                        total_choices = len(st.session_state.df_target[st.session_state.df_target["is_choice"] == True])
-                        st.metric("📝 Choices", total_choices)
-                    with col3:
-                        headings_count = len(st.session_state.df_target[st.session_state.df_target["question_category"] == "Heading"])
-                        st.metric("📋 Headings", headings_count)
-                    with col4:
-                        unique_surveys = st.session_state.df_target["survey_id"].nunique()
-                        st.metric("📊 Surveys", unique_surveys)
-                    with col5:
-                        # Add survey categories
-                        st.session_state.df_target["survey_category"] = st.session_state.df_target["survey_title"].apply(categorize_survey)
-                        unique_categories = st.session_state.df_target["survey_category"].nunique()
-                        st.metric("🏷️ Categories", unique_categories)
-                    
-                    st.markdown("---")
-                    
-                    # Enhanced display options
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        show_main_only = st.checkbox("📋 Show only main questions", value=False)
-                    with col2:
-                        question_filter = st.selectbox("🔍 Filter by Q category", 
-                                                     ["All", "Main Question/Multiple Choice", "Heading"])
-                    with col3:
-                        survey_category_filter = st.selectbox("📊 Filter by S category",
-                                                            ["All"] + sorted(st.session_state.df_target["survey_category"].unique().tolist()))
-                    
-                    # Filter and display data
-                    display_df = st.session_state.df_target.copy()
-                    
-                    if show_main_only:
-                        display_df = display_df[display_df["is_choice"] == False]
-                    
-                    if question_filter != "All":
-                        display_df = display_df[display_df["question_category"] == question_filter]
-                    
-                    if survey_category_filter != "All":
-                        display_df = display_df[display_df["survey_category"] == survey_category_filter]
-                    
-                    display_df["survey_id_title"] = display_df.apply(
-                        lambda x: f"{x['survey_id']} - {x['survey_title']}" if pd.notnull(x['survey_id']) and pd.notnull(x['survey_title']) else "",
-                        axis=1
-                    )
-                    
-                    st.markdown(f"### 📋 Enhanced Survey Questions ({len(display_df)} items)")
-                    
-                    st.dataframe(
-                        display_df[["survey_id_title", "heading_0", "position", "is_choice", "parent_question", "schema_type", "question_category", "survey_category"]],
-                        column_config={
-                            "survey_id_title": st.column_config.TextColumn("Survey ID/Title", width="medium"),
-                            "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
-                            "position": st.column_config.NumberColumn("Position", width="small"),
-                            "is_choice": st.column_config.CheckboxColumn("Is Choice", width="small"),
-                            "parent_question": st.column_config.TextColumn("Parent Question", width="medium"),
-                            "schema_type": st.column_config.TextColumn("Schema Type", width="small"),
-                            "question_category": st.column_config.TextColumn("Q Category", width="small"),
-                            "survey_category": st.column_config.TextColumn("S Category", width="small")
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
-                    
+                    # Run enhanced UID matching
+                    try:
+                        with st.spinner("🔄 Running enhanced UID matching..."):
+                            st.session_state.df_reference = get_all_reference_questions()
+                            
+                            # Update governance settings
+                            if enforce_governance:
+                                UID_GOVERNANCE['max_variations_per_uid'] = max_variations
+                                UID_GOVERNANCE['quality_score_threshold'] = quality_threshold
+                                UID_GOVERNANCE['semantic_similarity_threshold'] = semantic_threshold
+                            
+                            # Enhanced synonym mapping for this session
+                            session_synonym_map = ENHANCED_SYNONYM_MAP.copy()
+                            
+                            st.session_state.df_final = run_uid_match(st.session_state.df_reference, st.session_state.df_target, session_synonym_map)
+                            st.session_state.uid_changes = {}
+                            
+                        # Enhanced matching results
+                        matched_percentage = calculate_matched_percentage(st.session_state.df_final)
+                        
+                        st.markdown("### 📊 Enhanced Configuration Results")
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        
+                        with col1:
+                            st.metric("📊 Match Rate", f"{matched_percentage}%")
+                        
+                        with col2:
+                            total_q = len(st.session_state.df_target[st.session_state.df_target["is_choice"] == False])
+                            st.metric("❓ Questions", total_q)
+                        
+                        with col3:
+                            governance_compliant = len(st.session_state.df_final[st.session_state.df_final.get("Final_Governance", "✅") == "✅"])
+                            total_matched = len(st.session_state.df_final[st.session_state.df_final["Final_UID"].notna()])
+                            governance_rate = (governance_compliant / total_matched * 100) if total_matched > 0 else 0
+                            st.metric("⚖️ Governance Rate", f"{governance_rate:.1f}%")
+                        
+                        with col4:
+                            semantic_matches = len(st.session_state.df_final[st.session_state.df_final.get("Final_Match_Type", "") == "🧠 Semantic"])
+                            st.metric("🧠 Semantic Matches", semantic_matches)
+                        
+                        with col5:
+                            conflicts = len(st.session_state.df_final[st.session_state.df_final.get("UID_Conflict", "") == "⚠️ Conflict"])
+                            st.metric("⚠️ Conflicts", conflicts)
+                        
+                        # Governance violations alert
+                        governance_violations = st.session_state.df_final[st.session_state.df_final.get("Final_Governance", "✅") == "⚠️"]
+                        if not governance_violations.empty and enforce_governance:
+                            st.warning(f"⚖️ Found {len(governance_violations)} governance violations. These UIDs exceed the maximum variation limit.")
+                        
+                        # Display enhanced configuration interface
+                        st.markdown("---")
+                        st.markdown("### ⚙️ Enhanced Configuration & Analysis")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            show_main_only = st.checkbox("📋 Show only main questions", value=True)
+                        with col2:
+                            search_query = st.text_input("🔍 Search questions", placeholder="Type to filter...")
+                        with col3:
+                            match_type_filter = st.selectbox("🎯 Match Type", ["All", "✅ High", "⚠️ Low", "🧠 Semantic", "❌ No match"])
+                        
+                        # Filter and display results with enhanced columns
+                        display_df = st.session_state.df_final.copy()
+                        
+                        if show_main_only:
+                            display_df = display_df[display_df["is_choice"] == False]
+                        
+                        if search_query:
+                            display_df = display_df[display_df["heading_0"].str.contains(search_query, case=False, na=False)]
+                        
+                        if match_type_filter != "All":
+                            display_df = display_df[display_df.get("Final_Match_Type", "") == match_type_filter]
+                        
+                        # Add enhanced columns
+                        display_df["survey_id_title"] = display_df.apply(
+                            lambda x: f"{x['survey_id']} - {x['survey_title']}" if pd.notnull(x['survey_id']) and pd.notnull(x['survey_title']) else "",
+                            axis=1
+                        )
+                        
+                        st.markdown(f"### 📋 Enhanced Survey Configuration ({len(display_df)} items)")
+                        
+                        # Display configuration table with governance info
+                        config_columns = [
+                            "survey_id_title", "heading_0", "position", "is_choice", "schema_type", 
+                            "configured_final_UID", "Final_Match_Type", "Final_Governance", "question_category", "survey_category"
+                        ]
+                        config_columns = [col for col in config_columns if col in display_df.columns]
+                        
+                        st.dataframe(
+                            display_df[config_columns],
+                            column_config={
+                                "survey_id_title": st.column_config.TextColumn("Survey", width="medium"),
+                                "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+                                "position": st.column_config.NumberColumn("Position", width="small"),
+                                "is_choice": st.column_config.CheckboxColumn("Is Choice", width="small"),
+                                "schema_type": st.column_config.TextColumn("Schema Type", width="small"),
+                                "configured_final_UID": st.column_config.TextColumn("Final UID", width="medium"),
+                                "Final_Match_Type": st.column_config.TextColumn("Match Type", width="medium"),
+                                "Final_Governance": st.column_config.TextColumn("Governance", width="small"),
+                                "question_category": st.column_config.TextColumn("Question Category", width="small"),
+                                "survey_category": st.column_config.TextColumn("Survey Category", width="small")
+                            },
+                            hide_index=True,
+                            use_container_width=True
+                        )
                     # Enhanced download option
                     st.download_button(
                         "📥 Download Enhanced Survey Data",
