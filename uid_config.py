@@ -1,3 +1,21 @@
+import streamlit as st
+import pandas as pd
+import requests
+import json
+import logging
+import uuid
+from datetime import datetime
+from sqlalchemy import create_engine, text
+from snowflake.sqlalchemy import URL
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # App UI with enhanced styling
 st.markdown('<div class="main-header">🧠 UID Matcher Pro: Snowflake + SurveyMonkey</div>', unsafe_allow_html=True)
 
@@ -5,7 +23,6 @@ st.markdown('<div class="main-header">🧠 UID Matcher Pro: Snowflake + SurveyMo
 if "snowflake" not in st.secrets or "surveymonkey" not in st.secrets:
     st.markdown('<div class="warning-card">⚠️ Missing secrets configuration for Snowflake or SurveyMonkey.</div>', unsafe_allow_html=True)
     st.stop()
-
 # Home Page with Enhanced Dashboard
 if st.session_state.page == "home":
     st.markdown("## 🏠 Welcome to UID Matcher Pro")
