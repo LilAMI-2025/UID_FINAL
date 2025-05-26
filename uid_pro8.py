@@ -1685,7 +1685,7 @@ elif st.session_state.page == "categorized_questions":
                     'governance_compliant': 'Governance'
                 })
                 
-           st.dataframe(
+          st.dataframe(
     display_df[config_columns],
     column_config={
         "survey_id_title": st.column_config.TextColumn("Survey", width="medium"),
@@ -1702,9 +1702,7 @@ elif st.session_state.page == "categorized_questions":
     hide_index=True,
     use_container_width=True
 )
-
-                
-                # Download options
+                                # Download options
                 st.markdown("---")
                 col1, col2, col3 = st.columns(3)
                 
