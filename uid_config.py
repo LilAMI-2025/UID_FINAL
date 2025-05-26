@@ -16,6 +16,10 @@ import numpy as np
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Initialize session state for page navigation
+if "page" not in st.session_state:
+    st.session_state.page = "home"
+
 # App UI with enhanced styling
 st.markdown('<div class="main-header">🧠 UID Matcher Pro: Snowflake + SurveyMonkey</div>', unsafe_allow_html=True)
 
