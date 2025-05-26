@@ -1,3 +1,5 @@
+# Add some spacing at the bottom
+st.markdown("<br><br>", unsafe_allow_html=True)import streamlit as st
 import pandas as pd
 import requests
 import re
@@ -1625,6 +1627,3 @@ with col2:
 
 with col3:
     st.markdown(f"**Current Page:** {st.session_state.page.replace('_', ' ').title()}")
-
-# Add some spacing at the bottom
-st.markdown("<br><br>", unsafe_allow_html=True)import streamlit as st
