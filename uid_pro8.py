@@ -239,20 +239,22 @@ elif st.session_state.page == "view_question_bank":
             })
             
             st.dataframe(
-                display_df,
-                column_config={
-                    "Target Question": st.column_config.TextColumn("Target Question", width="large"),
-                    "Matched UID": st.column_config.TextColumn("UID", width="small"),
-                    "Match Type": st.column_config.TextColumn("Match Type", width="small"),
-                    "Governance": st.column_config.TextColumn("Governance", width="small"),
-                    "TF-IDF Score": st.column_config.NumberColumn("TF-IDF", format="%.3f", width="small"),
-                    "Semantic Score": st.column_config.NumberColumn("Semantic", format="%.3f", width="small"),
-                    "Reference Question": st.column_config.TextColumn("Reference Question", width="large"),
-                    "Category": st.column_config.TextColumn("Category", width="small")
-                },
-                hide_index=True,
-                use_container_width=True
-            )
+    display_df[config_columns],
+    column_config={
+        "survey_id_title": st.column_config.TextColumn("Survey", width="medium"),
+        "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+        "position": st.column_config.NumberColumn("Position", width="small"),
+        "is_choice": st.column_config.CheckboxColumn("Is Choice", width="small"),
+        "schema_type": st.column_config.TextColumn("Schema Type", width="small"),
+        "configured_final_UID": st.column_config.TextColumn("Final UID", width="medium"),
+        "Final_Match_Type": st.column_config.TextColumn("Match Type", width="medium"),
+        "Final_Governance": st.column_config.TextColumn("Governance", width="small"),
+        "question_category": st.column_config.TextColumn("Question Category", width="small"),
+        "survey_category": st.column_config.TextColumn("Survey Category", width="small")
+    },
+    hide_index=True,
+    use_container_width=True
+)
             
             # Enhanced download options
             st.markdown("---")
