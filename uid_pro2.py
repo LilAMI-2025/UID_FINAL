@@ -1,5 +1,4 @@
-# Add some spacing at the bottom
-st.markdown("<br><br>", unsafe_allow_html=True)import streamlit as st
+import streamlit as st
 import pandas as pd
 import requests
 import re
@@ -659,7 +658,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-# Quick links
+    # Quick links
     st.markdown("**🔗 Quick Links**")
     st.markdown("📝 [Submit New Question](https://docs.google.com/forms/d/1LoY_La59UJ4ZsuxckM8Wl52kVeLI7a1t1MF8zIQxGUs)")
     st.markdown("🆔 [Submit New UID](https://docs.google.com/forms/d/1lkhfm1-t5-zwLxfbVEUiHewveLpGXv5yEVRlQx5XjxA)")
@@ -1627,3 +1626,7 @@ with col2:
 
 with col3:
     st.markdown(f"**Current Page:** {st.session_state.page.replace('_', ' ').title()}")
+
+# Add some spacing at the bottom
+st.markdown("<br><br>", unsafe_allow_html=True)
+
