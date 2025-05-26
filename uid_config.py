@@ -1,4 +1,286 @@
-# Enhanced Configure Survey Page
+# Enhanced Create New Survey Page
+elif st.session_state.page == "create_survey":
+    st.markdown("## ➕ Create New Survey")
+    st.markdown("*Build and deploy a new survey directly to SurveyMonkey*")
+    
+    try:
+        token = st.secrets.get("surveymonkey", {}).get("token", None)
+        if not token:
+            st.markdown('<div class="warning-card">❌ SurveyMonkey token is missing in secrets configuration.</div>', unsafe_allow_html=True)
+            st.stop()
+        
+        st.markdown("### 🎯 Survey Template Builder")
+        
+        with st.form("survey_template_form"):
+            # Basic survey settings
+            col1, col2 = st.columns(2)
+            with col1:
+                survey_title = st.text_input("📝 Survey Title", value="New Survey")
+                survey_language = st.selectbox("🌐 Language", ["en", "es", "fr", "de"], index=0)
+            with col2:
+                num_pages = st.number_input("📄 Number of Pages", min_value=1, max_value=10, value=1)
+                survey_theme = st.selectbox("🎨 Theme", ["Default", "Professional", "Modern"], index=0)
+            
+            # Survey settings
+            st.markdown("#### ⚙️ Survey Settings")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                show_progress_bar = st.checkbox("📊 Show Progress Bar", value=True)
+            with col2:
+                hide_asterisks = st.checkbox("⭐ Hide Required Asterisks", value=False)
+            with col3:
+                one_question_at_a_time = st.checkbox("1️⃣ One Question Per Page", value=False)
+            
+            # Pages and questions builder
+            pages = []
+            for i in range(num_pages):
+                st.markdown(f"### 📄 Page {i+1}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    page_title = st.text_input(f"Page Title", value=f"Page {i+1}", key=f"page_title_{i}")
+                with col2:
+                    num_questions = st.number_input(
+                        f"Questions on Page",
+                        min_value=1,
+                        max_value=10,
+                        value=2,
+                        key=f"num_questions_{i}"
+                    )
+                
+                page_description = st.text_area(f"Page Description", value="", key=f"page_desc_{i}")
+                
+                questions = []
+                for j in range(num_questions):
+                    with st.expander(f"❓ Question {j+1}"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            question_text = st.text_input("Question Text", value="", key=f"q_text_{i}_{j}")
+                            question_type = st.selectbox(
+                                "Question Type",
+                                ["Single Choice", "Multiple Choice", "Open-Ended", "Matrix"],
+                                key=f"q_type_{i}_{j}"
+                            )
+                        with col2:
+                            is_required = st.checkbox("Required", key=f"q_required_{i}_{j}")
+                            question_position = st.number_input("Position", min_value=1, value=j+1, key=f"q_pos_{i}_{j}")
+                        
+                        question_template = {
+                            "heading": question_text,
+                            "position": question_position,
+                            "is_required": is_required
+                        }
+                        
+                        if question_type == "Single Choice":
+                            question_template["family"] = "single_choice"
+                            question_template["subtype"] = "vertical"
+                            num_choices = st.number_input(
+                                "Number of Choices",
+                                min_value=2,
+                                max_value=10,
+                                value=3,
+                                key=f"num_choices_{i}_{j}"
+                            )
+                            choices = []
+                            choice_cols = st.columns(min(num_choices, 3))
+                            for k in range(num_choices):
+                                col_idx = k % len(choice_cols)
+                                with choice_cols[col_idx]:
+                                    choice_text = st.text_input(
+                                        f"Choice {k+1}",
+                                        value="",
+                                        key=f"choice_{i}_{j}_{k}"
+                                    )
+                                if choice_text:
+                                    choices.append({"text": choice_text, "position": k + 1})
+                            if choices:
+                                question_template["choices"] = choices
+                        
+                        elif question_type == "Multiple Choice":
+                            question_template["family"] = "multiple_choice"
+                            question_template["subtype"] = "vertical"
+                            num_choices = st.number_input(
+                                "Number of Choices",
+                                min_value=2,
+                                max_value=10,
+                                value=4,
+                                key=f"num_choices_{i}_{j}"
+                            )
+                            choices = []
+                            choice_cols = st.columns(min(num_choices, 3))
+                            for k in range(num_choices):
+                                col_idx = k % len(choice_cols)
+                                with choice_cols[col_idx]:
+                                    choice_text = st.text_input(
+                                        f"Choice {k+1}",
+                                        value="",
+                                        key=f"choice_{i}_{j}_{k}"
+                                    )
+                                if choice_text:
+                                    choices.append({"text": choice_text, "position": k + 1})
+                            if choices:
+                                question_template["choices"] = choices
+                        
+                        elif question_type == "Open-Ended":
+                            question_template["family"] = "open_ended"
+                            subtype_options = ["essay", "single", "numerical"]
+                            question_template["subtype"] = st.selectbox(
+                                "Open-Ended Type",
+                                subtype_options,
+                                key=f"oe_type_{i}_{j}"
+                            )
+                        
+                        elif question_type == "Matrix":
+                            question_template["family"] = "matrix"
+                            question_template["subtype"] = "rating"
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                num_rows = st.number_input(
+                                    "Number of Rows",
+                                    min_value=2,
+                                    max_value=10,
+                                    value=3,
+                                    key=f"num_rows_{i}_{j}"
+                                )
+                                rows = []
+                                for k in range(num_rows):
+                                    row_text = st.text_input(
+                                        f"Row {k+1}",
+                                        value="",
+                                        key=f"row_{i}_{j}_{k}"
+                                    )
+                                    if row_text:
+                                        rows.append({"text": row_text, "position": k + 1})
+                            
+                            with col2:
+                                num_matrix_choices = st.number_input(
+                                    "Number of Rating Options",
+                                    min_value=2,
+                                    max_value=10,
+                                    value=5,
+                                    key=f"num_matrix_choices_{i}_{j}"
+                                )
+                                matrix_choices = []
+                                for k in range(num_matrix_choices):
+                                    choice_text = st.text_input(
+                                        f"Rating {k+1}",
+                                        value="",
+                                        key=f"rating_{i}_{j}_{k}"
+                                    )
+                                    if choice_text:
+                                        matrix_choices.append({"text": choice_text, "position": k + 1})
+                            
+                            if rows and matrix_choices:
+                                question_template["rows"] = rows
+                                question_template["choices"] = matrix_choices
+                        
+                        if question_text:
+                            questions.append(question_template)
+                
+                if questions:
+                    pages.append({
+                        "title": page_title,
+                        "description": page_description,
+                        "questions": questions
+                    })
+            
+            # Survey template compilation
+            survey_template = {
+                "title": survey_title,
+                "language": survey_language,
+                "pages": pages,
+                "settings": {
+                    "progress_bar": show_progress_bar,
+                    "hide_asterisks": hide_asterisks,
+                    "one_question_at_a_time": one_question_at_a_time
+                },
+                "theme": {
+                    "name": survey_theme.lower(),
+                    "font": "Arial",
+                    "background_color": "#FFFFFF",
+                    "question_color": "#000000",
+                    "answer_color": "#000000"
+                }
+            }
+            
+            submit = st.form_submit_button("🚀 Create Survey", type="primary", use_container_width=True)
+            
+            if submit:
+                if not survey_title or not pages:
+                    st.markdown('<div class="warning-card">⚠️ Survey title and at least one page with questions are required.</div>', unsafe_allow_html=True)
+                else:
+                    st.session_state.survey_template = survey_template
+                    
+                    try:
+                        with st.spinner("🔄 Creating survey in SurveyMonkey..."):
+                            # Create survey
+                            survey_id = create_survey(token, survey_template)
+                            
+                            # Create pages and questions
+                            for page_template in survey_template["pages"]:
+                                page_id = create_page(token, survey_id, page_template)
+                                for question_template in page_template["questions"]:
+                                    create_question(token, survey_id, page_id, question_template)
+                            
+                            st.markdown(f'<div class="success-card">🎉 Survey created successfully!<br>Survey ID: <strong>{survey_id}</strong></div>', unsafe_allow_html=True)
+                            st.balloons()
+                            
+                    except Exception as e:
+                        st.markdown(f'<div class="warning-card">❌ Failed to create survey: {e}</div>', unsafe_allow_html=True)
+        
+        # Preview section
+        if st.session_state.survey_template:
+            st.markdown("---")
+            st.markdown("### 👀 Survey Template Preview")
+            
+            with st.expander("🔍 View JSON Template"):
+                st.json(st.session_state.survey_template)
+            
+            # Summary display
+            template = st.session_state.survey_template
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📄 Pages", len(template.get("pages", [])))
+            with col2:
+                total_questions = sum(len(page.get("questions", [])) for page in template.get("pages", []))
+                st.metric("❓ Questions", total_questions)
+            with col3:
+                st.metric("🌐 Language", template.get("language", "en").upper())
+            with col4:
+                st.metric("📊 Progress Bar", "✅" if template.get("settings", {}).get("progress_bar") else "❌")
+            
+            # Download template
+            st.download_button(
+                "📥 Download Template",
+                json.dumps(template, indent=2),
+                f"survey_template_{uuid4()}.json",
+                "application/json",
+                use_container_width=True
+            )
+        
+    except Exception as e:
+        logger.error(f"Survey creation failed: {e}")
+        st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
+
+# Navigation footer
+st.markdown("---")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if st.button("🏠 Return to Dashboard", use_container_width=True):
+        st.session_state.page = "home"
+        st.rerun()
+
+with col2:
+    st.markdown("*Built with ❤️ using Streamlit*")
+
+with col3:
+    st.markdown(f"**Current Page:** {st.session_state.page.replace('_', ' ').title()}")
+
+# Add some spacing at the bottom
+st.markdown("<br><br>", unsafe_allow_html=True)# Enhanced Configure Survey Page
 elif st.session_state.page == "configure_survey":
     st.markdown("## ⚙️ Configure Survey from SurveyMonkey")
     st.markdown("*Match survey questions with UIDs and configure settings*")
@@ -154,13 +436,13 @@ elif st.session_state.page == "configure_survey":
                             st.metric("🎯 Match Success", f"{matched_percentage}%", 
                                      delta=f"{matched_percentage - 50:.1f}%" if matched_percentage > 50 else None)
                         with col2:
-                            high_matches = len(st.session_state.df_final[st.session_state.df_final["Final_Match_Type"] == "✅ High"])
+                            high_matches = len(st.session_state.df_final[st.session_state.df_final.get("Final_Match_Type", "") == "✅ High"])
                             st.metric("✅ High Confidence", high_matches)
                         with col3:
-                            low_matches = len(st.session_state.df_final[st.session_state.df_final["Final_Match_Type"] == "⚠️ Low"])
+                            low_matches = len(st.session_state.df_final[st.session_state.df_final.get("Final_Match_Type", "") == "⚠️ Low"])
                             st.metric("⚠️ Low Confidence", low_matches)
                         with col4:
-                            no_matches = len(st.session_state.df_final[st.session_state.df_final["Final_Match_Type"] == "❌ No match"])
+                            no_matches = len(st.session_state.df_final[st.session_state.df_final.get("Final_Match_Type", "") == "❌ No match"])
                             st.metric("❌ No Match", no_matches)
                         
                         if matched_percentage == 0.0:
@@ -208,9 +490,9 @@ elif st.session_state.page == "configure_survey":
                         elif match_filter == "Not Matched":
                             result_df = result_df[result_df["Final_UID"].isna()]
                         elif match_filter == "High Confidence":
-                            result_df = result_df[result_df["Final_Match_Type"] == "✅ High"]
+                            result_df = result_df[result_df.get("Final_Match_Type", "") == "✅ High"]
                         elif match_filter == "Low Confidence":
-                            result_df = result_df[result_df["Final_Match_Type"] == "⚠️ Low"]
+                            result_df = result_df[result_df.get("Final_Match_Type", "") == "⚠️ Low"]
                         
                         if category_filter != "All":
                             result_df = result_df[result_df["question_category"] == category_filter]
@@ -539,16 +821,16 @@ elif st.session_state.page == "update_question_bank":
             # Enhanced results display
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                high_conf = len(df_final[df_final["Final_Match_Type"] == "✅ High"])
+                high_conf = len(df_final[df_final.get("Final_Match_Type", "") == "✅ High"])
                 st.metric("✅ High Confidence", high_conf)
             with col2:
-                low_conf = len(df_final[df_final["Final_Match_Type"] == "⚠️ Low"]) 
+                low_conf = len(df_final[df_final.get("Final_Match_Type", "") == "⚠️ Low"]) 
                 st.metric("⚠️ Low Confidence", low_conf)
             with col3:
-                semantic = len(df_final[df_final["Final_Match_Type"] == "🧠 Semantic"])
+                semantic = len(df_final[df_final.get("Final_Match_Type", "") == "🧠 Semantic"])
                 st.metric("🧠 Semantic", semantic)
             with col4:
-                no_match = len(df_final[df_final["Final_Match_Type"] == "❌ No match"])
+                no_match = len(df_final[df_final.get("Final_Match_Type", "") == "❌ No match"])
                 st.metric("❌ No Match", no_match)
             
             st.markdown("---")
@@ -568,7 +850,7 @@ elif st.session_state.page == "update_question_bank":
                 min_similarity = st.slider("📊 Minimum Similarity Score", 0.0, 1.0, 0.5, 0.05)
             
             # Apply filters
-            filtered_df = df_final[df_final["Final_Match_Type"].isin(confidence_filter)]
+            filtered_df = df_final[df_final.get("Final_Match_Type", "").isin(confidence_filter)]
             if "Similarity" in filtered_df.columns:
                 filtered_df = filtered_df[filtered_df["Similarity"] >= min_similarity]
             
@@ -581,7 +863,8 @@ elif st.session_state.page == "update_question_bank":
             if "Matched_Question" in filtered_df.columns:
                 display_columns.append("Matched_Question")
             
-            display_df = filtered_df[display_columns].copy()
+            available_columns = [col for col in display_columns if col in filtered_df.columns]
+            display_df = filtered_df[available_columns].copy()
             display_df = display_df.rename(columns={
                 "heading_0": "Target Question",
                 "Final_UID": "Matched UID",
@@ -632,291 +915,7 @@ elif st.session_state.page == "update_question_bank":
         if "250001" in str(e):
             st.markdown('<div class="warning-card">🔒 Snowflake connection failed: User account is locked. Contact your Snowflake admin or wait 15–30 minutes.</div>', unsafe_allow_html=True)
         else:
-            st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
-
-# Enhanced Create New Survey Page
-elif st.session_state.page == "create_survey":
-    st.markdown("## ➕ Create New Survey")
-    st.markdown("*Build and deploy a new survey directly to SurveyMonkey*")
-    
-    try:
-        token = st.secrets.get("surveymonkey", {}).get("token", None)
-        if not token:
-            st.markdown('<div class="warning-card">❌ SurveyMonkey token is missing in secrets configuration.</div>', unsafe_allow_html=True)
-            st.stop()
-        
-        st.markdown("### 🎯 Survey Template Builder")
-        
-        with st.form("survey_template_form"):
-            # Basic survey settings
-            col1, col2 = st.columns(2)
-            with col1:
-                survey_title = st.text_input("📝 Survey Title", value="New Survey")
-                survey_language = st.selectbox("🌐 Language", ["en", "es", "fr", "de"], index=0)
-            with col2:
-                num_pages = st.number_input("📄 Number of Pages", min_value=1, max_value=10, value=1)
-                survey_theme = st.selectbox("🎨 Theme", ["Default", "Professional", "Modern"], index=0)
-            
-            # Survey settings
-            st.markdown("#### ⚙️ Survey Settings")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                show_progress_bar = st.checkbox("📊 Show Progress Bar", value=True)
-            with col2:
-                hide_asterisks = st.checkbox("⭐ Hide Required Asterisks", value=False)
-            with col3:
-                one_question_at_a_time = st.checkbox("1️⃣ One Question Per Page", value=False)
-            
-            # Pages and questions builder
-            pages = []
-            for i in range(num_pages):
-                st.markdown(f"### 📄 Page {i+1}")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    page_title = st.text_input(f"Page Title", value=f"Page {i+1}", key=f"page_title_{i}")
-                with col2:
-                    num_questions = st.number_input(
-                        f"Questions on Page",
-                        min_value=1,
-                        max_value=10,
-                        value=2,
-                        key=f"num_questions_{i}"
-                    )
-                
-                page_description = st.text_area(f"Page Description", value="", key=f"page_desc_{i}")
-                
-                questions = []
-                for j in range(num_questions):
-                    with st.expander(f"❓ Question {j+1}"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            question_text = st.text_input("Question Text", value="", key=f"q_text_{i}_{j}")
-                            question_type = st.selectbox(
-                                "Question Type",
-                                ["Single Choice", "Multiple Choice", "Open-Ended", "Matrix"],
-                                key=f"q_type_{i}_{j}"
-                            )
-                        with col2:
-                            is_required = st.checkbox("Required", key=f"q_required_{i}_{j}")
-                            question_position = st.number_input("Position", min_value=1, value=j+1, key=f"q_pos_{i}_{j}")
-                        
-                        question_template = {
-                            "heading": question_text,
-                            "position": question_position,
-                            "is_required": is_required
-                        }
-                        
-                        if question_type == "Single Choice":
-                            question_template["family"] = "single_choice"
-                            question_template["subtype"] = "vertical"
-                            num_choices = st.number_input(
-                                "Number of Choices",
-                                min_value=2,
-                                max_value=10,
-                                value=3,
-                                key=f"num_choices_{i}_{j}"
-                            )
-                            choices = []
-                            choice_cols = st.columns(min(num_choices, 3))
-                            for k in range(num_choices):
-                                col_idx = k % len(choice_cols)
-                                with choice_cols[col_idx]:
-                                    choice_text = st.text_input(
-                                        f"Choice {k+1}",
-                                        value="",
-                                        key=f"choice_{i}_{j}_{k}"
-                                    )
-                                if choice_text:
-                                    choices.append({"text": choice_text, "position": k + 1})
-                            if choices:
-                                question_template["choices"] = choices
-                        
-                        elif question_type == "Multiple Choice":
-                            question_template["family"] = "multiple_choice"
-                            question_template["subtype"] = "vertical"
-                            num_choices = st.number_input(
-                                "Number of Choices",
-                                min_value=2,
-                                max_value=10,
-                                value=4,
-                                key=f"num_choices_{i}_{j}"
-                            )
-                            choices = []
-                            choice_cols = st.columns(min(num_choices, 3))
-                            for k in range(num_choices):
-                                col_idx = k % len(choice_cols)
-                                with choice_cols[col_idx]:
-                                    choice_text = st.text_input(
-                                        f"Choice {k+1}",
-                                        value="",
-                                        key=f"choice_{i}_{j}_{k}"
-                                    )
-                                if choice_text:
-                                    choices.append({"text": choice_text, "position": k + 1})
-                            if choices:
-                                question_template["choices"] = choices
-                        
-                        elif question_type == "Open-Ended":
-                            question_template["family"] = "open_ended"
-                            subtype_options = ["essay", "single", "numerical"]
-                            question_template["subtype"] = st.selectbox(
-                                "Open-Ended Type",
-                                subtype_options,
-                                key=f"oe_type_{i}_{j}"
-                            )
-                        
-                        elif question_type == "Matrix":
-                            question_template["family"] = "matrix"
-                            question_template["subtype"] = "rating"
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                num_rows = st.number_input(
-                                    "Number of Rows",
-                                    min_value=2,
-                                    max_value=10,
-                                    value=3,
-                                    key=f"num_rows_{i}_{j}"
-                                )
-                                rows = []
-                                for k in range(num_rows):
-                                    row_text = st.text_input(
-                                        f"Row {k+1}",
-                                        value="",
-                                        key=f"row_{i}_{j}_{k}"
-                                    )
-                                    if row_text:
-                                        rows.append({"text": row_text, "position": k + 1})
-                            
-                            with col2:
-                                num_matrix_choices = st.number_input(
-                                    "Number of Rating Options",
-                                    min_value=2,
-                                    max_value=10,
-                                    value=5,
-                                    key=f"num_matrix_choices_{i}_{j}"
-                                )
-                                matrix_choices = []
-                                for k in range(num_matrix_choices):
-                                    choice_text = st.text_input(
-                                        f"Rating {k+1}",
-                                        value="",
-                                        key=f"rating_{i}_{j}_{k}"
-                                    )
-                                    if choice_text:
-                                        matrix_choices.append({"text": choice_text, "position": k + 1})
-                            
-                            if rows and matrix_choices:
-                                question_template["rows"] = rows
-                                question_template["choices"] = matrix_choices
-                        
-                        if question_text:
-                            questions.append(question_template)
-                
-                if questions:
-                    pages.append({
-                        "title": page_title,
-                        "description": page_description,
-                        "questions": questions
-                    })
-            
-            # Survey template compilation
-            survey_template = {
-                "title": survey_title,
-                "language": survey_language,
-                "pages": pages,
-                "settings": {
-                    "progress_bar": show_progress_bar,
-                    "hide_asterisks": hide_asterisks,
-                    "one_question_at_a_time": one_question_at_a_time
-                },
-                "theme": {
-                    "name": survey_theme.lower(),
-                    "font": "Arial",
-                    "background_color": "#FFFFFF",
-                    "question_color": "#000000",
-                    "answer_color": "#000000"
-                }
-            }
-            
-            submit = st.form_submit_button("🚀 Create Survey", type="primary", use_container_width=True)
-            
-            if submit:
-                if not survey_title or not pages:
-                    st.markdown('<div class="warning-card">⚠️ Survey title and at least one page with questions are required.</div>', unsafe_allow_html=True)
-                else:
-                    st.session_state.survey_template = survey_template
-                    
-                    try:
-                        with st.spinner("🔄 Creating survey in SurveyMonkey..."):
-                            # Create survey
-                            survey_id = create_survey(token, survey_template)
-                            
-                            # Create pages and questions
-                            for page_template in survey_template["pages"]:
-                                page_id = create_page(token, survey_id, page_template)
-                                for question_template in page_template["questions"]:
-                                    create_question(token, survey_id, page_id, question_template)
-                            
-                            st.markdown(f'<div class="success-card">🎉 Survey created successfully!<br>Survey ID: <strong>{survey_id}</strong></div>', unsafe_allow_html=True)
-                            st.balloons()
-                            
-                    except Exception as e:
-                        st.markdown(f'<div class="warning-card">❌ Failed to create survey: {e}</div>', unsafe_allow_html=True)
-        
-        # Preview section
-        if st.session_state.survey_template:
-            st.markdown("---")
-            st.markdown("### 👀 Survey Template Preview")
-            
-            with st.expander("🔍 View JSON Template"):
-                st.json(st.session_state.survey_template)
-            
-            # Summary display
-            template = st.session_state.survey_template
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("📄 Pages", len(template.get("pages", [])))
-            with col2:
-                total_questions = sum(len(page.get("questions", [])) for page in template.get("pages", []))
-                st.metric("❓ Questions", total_questions)
-            with col3:
-                st.metric("🌐 Language", template.get("language", "en").upper())
-            with col4:
-                st.metric("📊 Progress Bar", "✅" if template.get("settings", {}).get("progress_bar") else "❌")
-            
-            # Download template
-            st.download_button(
-                "📥 Download Template",
-                json.dumps(template, indent=2),
-                f"survey_template_{uuid4()}.json",
-                "application/json",
-                use_container_width=True
-            )
-        
-    except Exception as e:
-        logger.error(f"Survey creation failed: {e}")
-        st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
-
-# Navigation footer
-st.markdown("---")
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    if st.button("🏠 Return to Dashboard", use_container_width=True):
-        st.session_state.page = "home"
-        st.rerun()
-
-with col2:
-    st.markdown("*Built with ❤️ using Streamlit*")
-
-with col3:
-    st.markdown(f"**Current Page:** {st.session_state.page.replace('_', ' ').title()}")
-
-# Add some spacing at the bottom
-st.markdown("<br><br>", unsafe_allow_html=True)import streamlit as st
+            st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)import streamlit as st
 import pandas as pd
 import requests
 import re
@@ -1237,7 +1236,7 @@ def run_snowflake_target_query():
             )
         raise
 
-# SurveyMonkey API functions (keeping original implementation)
+# SurveyMonkey API functions
 def get_surveys(token):
     url = "https://api.surveymonkey.com/v3/surveys"
     headers = {"Authorization": f"Bearer {token}"}
@@ -1403,7 +1402,7 @@ def extract_questions(survey_json):
                         })
     return questions
 
-# UID Matching functions (keeping original implementation but with UI improvements)
+# UID Matching functions
 def compute_tfidf_matches(df_reference, df_target, synonym_map=DEFAULT_SYNONYM_MAP):
     df_reference = df_reference[df_reference["heading_0"].notna()].reset_index(drop=True)
     df_target = df_target[df_target["heading_0"].notna()].reset_index(drop=True)
