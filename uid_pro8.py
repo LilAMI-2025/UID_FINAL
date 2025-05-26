@@ -1767,20 +1767,23 @@ elif st.session_state.page == "configure_survey":
                         st.markdown(f"### 📋 Enhanced Survey Configuration ({len(display_df)} items)")
                         
                         # Display configuration table with governance info
-                        config_columns = [
-                            "survey_id_title", "heading_0", "position", "is_choice", "schema_type", 
-                            "configured_final_UID", "Final_Match_Type", "Final_Governance", "question_category", "survey_category"
-                        ]
-                        config_columns = [col for col in config_columns if col in display_df.columns]
-                        
                         st.dataframe(
-                            display_df[config_columns],
-                            column_config={
-                                "survey_id_title": st.column_config.TextColumn("Survey", width="medium"),
-                                "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
-                                "position": st.column_config.NumberColumn("Position", width="small"),
-                                "
-
+    display_df[config_columns],
+    column_config={
+        "survey_id_title": st.column_config.TextColumn("Survey", width="medium"),
+        "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+        "position": st.column_config.NumberColumn("Position", width="small"),
+        "is_choice": st.column_config.CheckboxColumn("Is Choice", width="small"),
+        "schema_type": st.column_config.TextColumn("Schema Type", width="small"),
+        "configured_final_UID": st.column_config.TextColumn("Final UID", width="medium"),
+        "Final_Match_Type": st.column_config.TextColumn("Match Type", width="medium"),
+        "Final_Governance": st.column_config.TextColumn("Governance", width="small"),
+        "question_category": st.column_config.TextColumn("Question Category", width="small"),
+        "survey_category": st.column_config.TextColumn("Survey Category", width="small")
+    },
+    hide_index=True,
+    use_container_width=True
+)
 # Enhanced Sidebar Navigation
 with st.sidebar:
     st.markdown("### 🧠 UID Matcher Pro")
