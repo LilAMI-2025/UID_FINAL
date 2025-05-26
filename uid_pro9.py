@@ -717,7 +717,8 @@ def enhanced_configure_survey_page():
                                 'Governance_Status': governance_status,
                                 'Standardized_Question': assignment_result['standardized_question']
                             })
-progress_bar.progress((i + 1) / len(df_target))
+                        
+                        progress_bar.progress((i + 1) / len(df_target))
                     
                     # Create results dataframe
                     df_enhanced = pd.DataFrame(enhanced_results)
@@ -1376,7 +1377,7 @@ elif st.session_state.page == "enhanced_unique_bank":
                 )
                 
                 # Enhanced downloads
-               st.markdown("### 📥 Enhanced Downloads")
+                st.markdown("### 📥 Enhanced Downloads")
                 
                 col1, col2, col3 = st.columns(3)
                 
@@ -2049,5 +2050,3 @@ else:
         if st.button("⭐ Enhanced Question Bank", use_container_width=True):
             st.session_state.page = "enhanced_unique_bank"
             st.rerun()
-               
-               
