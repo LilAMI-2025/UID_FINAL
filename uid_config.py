@@ -1690,6 +1690,97 @@ if st.session_state.page == "home":
             st.markdown('<div class="warning-card">❌ SurveyMonkey: API Issues</div>', unsafe_allow_html=True)
 
 # Unique Questions Bank Page
+    st.markdown("## 🏠 Welcome to UID Matcher Pro")
+    
+    # Dashboard metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("🔄 Status", "Active")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        try:
+            # Quick connection test
+            with get_snowflake_engine().connect() as conn:
+                result = conn.execute(text("SELECT COUNT(*) FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE WHERE UID IS NOT NULL"))
+                count = result.fetchone()[0]
+                st.metric("📊 Total UIDs", f"{count:,}")
+        except:
+            st.metric("📊 Total UIDs", "Connection Error")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        try:
+            token = st.secrets.get("surveymonkey", {}).get("token", None)
+            if token:
+                surveys = get_surveys(token)
+                st.metric("📋 SM Surveys", len(surveys))
+            else:
+                st.metric("📋 SM Surveys", "No Token")
+        except:
+            st.metric("📋 SM Surveys", "API Error")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Quick actions grid
+    st.markdown("## 🚀 Quick Actions")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 📊 SurveyMonkey Operations")
+        if st.button("👁️ View & Analyze Surveys", use_container_width=True):
+            st.session_state.page = "view_surveys"
+            st.rerun()
+        if st.button("⚙️ Configure Survey with UIDs", use_container_width=True):
+            st.session_state.page = "configure_survey"
+            st.rerun()
+        if st.button("➕ Create New Survey", use_container_width=True):
+            st.session_state.page = "create_survey"
+            st.rerun()
+    
+    with col2:
+        st.markdown("### 📚 Question Bank Management")
+        if st.button("📖 View Full Question Bank", use_container_width=True):
+            st.session_state.page = "view_question_bank"
+            st.rerun()
+        if st.button("⭐ Unique Questions Bank", use_container_width=True):
+            st.session_state.page = "unique_question_bank"
+            st.rerun()
+        if st.button("🔄 Update & Match Questions", use_container_width=True):
+            st.session_state.page = "update_question_bank"
+            st.rerun()
+    
+    # System status
+    st.markdown("---")
+    st.markdown("## 🔧 System Status")
+    
+    status_col1, status_col2 = st.columns(2)
+    
+    with status_col1:
+        try:
+            get_snowflake_engine()
+            st.markdown('<div class="success-card">✅ Snowflake: Connected</div>', unsafe_allow_html=True)
+        except:
+            st.markdown('<div class="warning-card">❌ Snowflake: Connection Issues</div>', unsafe_allow_html=True)
+    
+    with status_col2:
+        try:
+            token = st.secrets.get("surveymonkey", {}).get("token", None)
+            if token:
+                get_surveys(token)
+                st.markdown('<div class="success-card">✅ SurveyMonkey: Connected</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="warning-card">❌ SurveyMonkey: No Token</div>', unsafe_allow_html=True)
+        except:
+            st.markdown('<div class="warning-card">❌ SurveyMonkey: API Issues</div>', unsafe_allow_html=True)
+
+# Unique Questions Bank Page
 elif st.session_state.page == "unique_question_bank":
     st.markdown("## ⭐ Unique Questions Bank")
     st.markdown("*The best structured question for each UID, organized in ascending order*")
