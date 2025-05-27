@@ -70,12 +70,18 @@ st.markdown("""
         margin: 1rem 0;
     }
     
+    .governance-compliant {
+        background: #d4edda;
+        border-left: 4px solid #28a745;
+        padding: 0.5rem;
+        border-radius: 4px;
+    }
+    
     .governance-violation {
         background: #f8d7da;
+        border-left: 4px solid #dc3545;
         padding: 0.5rem;
-        border-radius: 5px;
-        border-left: 3px solid #dc3545;
-        margin: 0.5rem 0;
+        border-radius: 4px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -83,10 +89,10 @@ st.markdown("""
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants
+# Enhanced Constants with New Features
 TFIDF_HIGH_CONFIDENCE = 0.60
 TFIDF_LOW_CONFIDENCE = 0.50
-SEMANTIC_THRESHOLD = 0.75  # Increased for better semantic matching
+SEMANTIC_THRESHOLD = 0.75  # Increased for better matching
 HEADING_TFIDF_THRESHOLD = 0.55
 HEADING_SEMANTIC_THRESHOLD = 0.65
 HEADING_LENGTH_THRESHOLD = 50
@@ -95,26 +101,37 @@ BATCH_SIZE = 1000
 
 # Enhanced UID Governance Rules
 UID_GOVERNANCE = {
-    'max_variations_per_uid': 25,  # Reduced for better governance
-    'semantic_similarity_threshold': 0.80,  # Higher threshold for auto-assignment
+    'max_variations_per_uid': 50,
+    'semantic_similarity_threshold': 0.85,
     'auto_consolidate_threshold': 0.92,
     'quality_score_threshold': 5.0,
     'conflict_detection_enabled': True,
     'monthly_quality_check': True,
-    'standardized_format_required': True,
-    'semantic_matching_enabled': True
+    'standardization_required': True,
+    'auto_assign_new_uid': True,
+    'governance_violation_action': 'warn_and_log'  # 'warn_and_log', 'auto_fix', 'reject'
 }
 
-# Enhanced Survey Categories with more keywords
+# Question Standardization Rules
+STANDARDIZATION_RULES = {
+    'capitalize_first_letter': True,
+    'remove_extra_whitespace': True,
+    'standardize_punctuation': True,
+    'normalize_question_words': True,
+    'remove_html_artifacts': True,
+    'standardize_common_phrases': True
+}
+
+# Enhanced Survey Categories
 SURVEY_CATEGORIES = {
-    'Application': ['application', 'apply', 'registration', 'signup', 'join', 'register', 'enroll form'],
-    'Pre programme': ['pre-programme', 'pre programme', 'preparation', 'readiness', 'baseline', 'pre-program', 'pre program', 'before'],
-    'Enrollment': ['enrollment', 'enrolment', 'onboarding', 'welcome', 'start', 'begin', 'commence'],
-    'Progress Review': ['progress', 'review', 'milestone', 'checkpoint', 'assessment', 'evaluation', 'mid-term', 'interim'],
-    'Impact': ['impact', 'outcome', 'result', 'effect', 'change', 'transformation', 'post', 'after', 'completion'],
-    'GROW': ['GROW'],  # Exact match for CAPS - this takes priority
-    'Feedback': ['feedback', 'evaluation', 'rating', 'satisfaction', 'opinion', 'comment', 'review'],
-    'Pulse': ['pulse', 'quick', 'brief', 'snapshot', 'check-in', 'temperature', 'quick check']
+    'Application': ['application', 'apply', 'registration', 'signup', 'join'],
+    'Pre programme': ['pre-programme', 'pre programme', 'preparation', 'readiness', 'baseline'],
+    'Enrollment': ['enrollment', 'enrolment', 'onboarding', 'welcome', 'start'],
+    'Progress Review': ['progress', 'review', 'milestone', 'checkpoint', 'assessment'],
+    'Impact': ['impact', 'outcome', 'result', 'effect', 'change', 'transformation'],
+    'GROW': ['GROW'],
+    'Feedback': ['feedback', 'evaluation', 'rating', 'satisfaction', 'opinion'],
+    'Pulse': ['pulse', 'quick', 'brief', 'snapshot', 'check-in']
 }
 
 # Enhanced Synonym Mapping
@@ -131,11 +148,34 @@ ENHANCED_SYNONYM_MAP = {
     "your age": "what is your age",
     "current role": "current position",
     "your role": "your position",
-    "could you please": "what is",
-    "would you please": "what is",
-    "kindly select": "what is",
-    "choose one": "select",
-    "pick one": "select"
+    "organisation": "organization",
+    "colour": "color",
+    "favour": "favor"
+}
+
+# Question Format Standardization Patterns
+STANDARDIZATION_PATTERNS = {
+    'question_starters': {
+        'what is your': 'What is your',
+        'how many': 'How many',
+        'which of the following': 'Which of the following',
+        'do you': 'Do you',
+        'have you': 'Have you',
+        'would you': 'Would you'
+    },
+    'common_endings': {
+        ' ?': '?',
+        '??': '?',
+        ' .': '.',
+        '..': '.'
+    },
+    'html_removal': [
+        r'<[^>]+>',  # Remove HTML tags
+        r'&nbsp;',   # Remove HTML entities
+        r'&amp;',
+        r'&lt;',
+        r'&gt;'
+    ]
 }
 
 # Reference Heading Texts
@@ -147,698 +187,132 @@ HEADING_REFERENCES = [
     "Thank you for dedicating your time and effort to complete this diagnostic tool. Your valuable insights are crucial in our mission to map the landscape of BDS provision in Rwanda."
 ]
 
-# Enhanced Survey Categorization with Priority
-def categorize_survey(survey_title):
-    """
-    Enhanced categorization with priority ordering and better keyword matching
-    """
-    if not survey_title or pd.isna(survey_title):
-        return "Unknown"
-    
-    title_lower = survey_title.lower().strip()
-    
-    # Priority 1: Check GROW first (exact match for CAPS)
-    if 'GROW' in survey_title and survey_title.count('GROW') > 0:
-        return 'GROW'
-    
-    # Priority 2: Check for specific patterns
-    category_scores = {}
-    
-    for category, keywords in SURVEY_CATEGORIES.items():
-        if category == 'GROW':  # Already checked
-            continue
-            
-        score = 0
-        for keyword in keywords:
-            # Exact word match gets higher score
-            if f" {keyword.lower()} " in f" {title_lower} ":
-                score += 10
-            # Partial match gets lower score
-            elif keyword.lower() in title_lower:
-                score += 5
-        
-        if score > 0:
-            category_scores[category] = score
-    
-    # Return category with highest score
-    if category_scores:
-        return max(category_scores, key=category_scores.get)
-    
-    return "Other"
+# ========================
+# NEW: Question Standardization Functions
+# ========================
 
-# Enhanced Semantic UID Assignment with Governance
-def enhanced_semantic_matching(question_text, existing_uids_data, threshold=None):
-    """
-    Enhanced semantic matching with governance rules and conflict detection
-    """
-    if not existing_uids_data:
-        return None, 0.0, "new_uid_needed"
-    
-    if threshold is None:
-        threshold = UID_GOVERNANCE['semantic_similarity_threshold']
-    
-    try:
-        model = load_sentence_transformer()
-        
-        # Normalize and clean the question
-        cleaned_question = standardize_question_format(question_text)
-        
-        # Get embeddings
-        question_embedding = model.encode([cleaned_question], convert_to_tensor=True)
-        existing_questions = [data['best_question'] for data in existing_uids_data.values()]
-        existing_embeddings = model.encode(existing_questions, convert_to_tensor=True)
-        
-        # Calculate similarities
-        similarities = util.cos_sim(question_embedding, existing_embeddings)[0]
-        
-        # Find best match
-        best_idx = similarities.argmax().item()
-        best_score = similarities[best_idx].item()
-        
-        logger.info(f"Semantic matching: best score {best_score:.3f} (threshold: {threshold:.3f})")
-        
-        if best_score >= threshold:
-            best_uid = list(existing_uids_data.keys())[best_idx]
-            
-            # Check governance compliance before assignment
-            current_variations = existing_uids_data[best_uid].get('variation_count', 0)
-            if current_variations >= UID_GOVERNANCE['max_variations_per_uid']:
-                logger.warning(f"UID {best_uid} exceeds max variations ({current_variations}/{UID_GOVERNANCE['max_variations_per_uid']})")
-                return best_uid, best_score, "governance_violation"
-            
-            return best_uid, best_score, "semantic_match"
-            
-    except Exception as e:
-        logger.error(f"Semantic matching failed: {e}")
-    
-    return None, 0.0, "no_match"
-
-# Standardized Question Format
 def standardize_question_format(question_text):
     """
-    Standardize question format before UID assignment
+    Standardize question format according to governance rules
     """
     if not question_text or pd.isna(question_text):
-        return ""
+        return question_text
     
     text = str(question_text).strip()
     
-    # Remove HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
+    if not STANDARDIZATION_RULES['standardization_required']:
+        return text
     
-    # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text)
+    # Remove HTML artifacts
+    if STANDARDIZATION_RULES['remove_html_artifacts']:
+        for pattern in STANDARDIZATION_PATTERNS['html_removal']:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
     
-    # Remove special characters but keep question marks
-    text = re.sub(r'[^\w\s\?\.\,\-\(\)]', '', text)
+    # Remove extra whitespace
+    if STANDARDIZATION_RULES['remove_extra_whitespace']:
+        text = re.sub(r'\s+', ' ', text).strip()
     
-    # Ensure proper capitalization
-    if text and not text[0].isupper():
-        text = text[0].upper() + text[1:]
+    # Capitalize first letter
+    if STANDARDIZATION_RULES['capitalize_first_letter'] and text:
+        text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
     
-    # Ensure question ends with proper punctuation
-    if text and not text.endswith(('?', '.', ':')):
-        if any(qword in text.lower().split()[:3] for qword in ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should']):
-            text += '?'
-        else:
-            text += '.'
+    # Standardize punctuation
+    if STANDARDIZATION_RULES['standardize_punctuation']:
+        for old, new in STANDARDIZATION_PATTERNS['common_endings'].items():
+            if text.endswith(old):
+                text = text[:-len(old)] + new
     
-    return text
+    # Normalize question words
+    if STANDARDIZATION_RULES['normalize_question_words']:
+        text_lower = text.lower()
+        for old, new in STANDARDIZATION_PATTERNS['question_starters'].items():
+            if text_lower.startswith(old):
+                text = new + text[len(old):]
+                break
+    
+    # Standardize common phrases
+    if STANDARDIZATION_RULES['standardize_common_phrases']:
+        for old, new in ENHANCED_SYNONYM_MAP.items():
+            text = re.sub(re.escape(old), new, text, flags=re.IGNORECASE)
+    
+    return text.strip()
 
-# Enhanced UID Assignment with Full Governance
-def assign_uid_with_enhanced_governance(question_text, existing_uids_data, survey_category=None, force_new=False):
+def calculate_question_quality_score(question_text):
     """
-    Enhanced UID assignment with semantic matching and full governance compliance
+    Enhanced scoring function for question quality with governance compliance
     """
-    standardized_question = standardize_question_format(question_text)
+    if not question_text or pd.isna(question_text):
+        return 0
     
-    if not force_new and UID_GOVERNANCE['semantic_matching_enabled']:
-        # Try semantic matching first
-        matched_uid, confidence, status = enhanced_semantic_matching(standardized_question, existing_uids_data)
-        
-        if status == "semantic_match":
-            # Update variation count
-            existing_uids_data[matched_uid]['variation_count'] = existing_uids_data[matched_uid].get('variation_count', 0) + 1
-            
-            return {
-                'uid': matched_uid,
-                'method': 'semantic_match',
-                'confidence': confidence,
-                'governance_compliant': True,
-                'status': 'assigned',
-                'standardized_question': standardized_question
-            }
-        
-        elif status == "governance_violation":
-            logger.warning(f"Governance violation for UID {matched_uid}, creating new UID")
-            # Continue to create new UID
+    score = 0
+    text = str(question_text).lower().strip()
     
-    # Create new UID
-    if existing_uids_data:
-        # Find next available UID
-        existing_numeric_uids = [int(uid) for uid in existing_uids_data.keys() if uid.isdigit()]
-        if existing_numeric_uids:
-            new_uid = str(max(existing_numeric_uids) + 1)
-        else:
-            new_uid = "1"
-    else:
-        new_uid = "1"
+    # Length scoring (sweet spot is 10-100 characters)
+    length = len(text)
+    if 10 <= length <= 100:
+        score += 25
+    elif 5 <= length <= 150:
+        score += 15
+    elif length < 5:
+        score -= 25
+    elif length > 200:
+        score -= 10
     
-    # Initialize new UID data
-    existing_uids_data[new_uid] = {
-        'best_question': standardized_question,
-        'variation_count': 1,
-        'survey_category': survey_category or 'Unknown',
-        'created_date': datetime.now().isoformat(),
-        'quality_score': score_question_quality(standardized_question)
-    }
+    # Question format scoring
+    if text.endswith('?'):
+        score += 20
+    elif text.endswith('.') and any(text.startswith(word) for word in ['please', 'select', 'choose']):
+        score += 10
     
-    return {
-        'uid': new_uid,
-        'method': 'new_assignment',
-        'confidence': 1.0,
-        'governance_compliant': True,
-        'status': 'new_uid_created',
-        'standardized_question': standardized_question
-    }
+    # English question word scoring
+    question_words = ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should']
+    first_words = text.split()[:3]
+    if any(word in first_words for word in question_words):
+        score += 20
+    
+    # Proper capitalization
+    if question_text and question_text[0].isupper():
+        score += 10
+    
+    # Avoid artifacts (enhanced list)
+    bad_patterns = ['click here', 'please select', '...', 'n/a', 'other', 'select one', 'choose all', 'privacy policy', 'terms and conditions']
+    penalty = sum(15 for pattern in bad_patterns if pattern in text)
+    score -= penalty
+    
+    # Avoid HTML
+    if '<' in text and '>' in text:
+        score -= 25
+    
+    # Prefer complete sentences
+    word_count = len(text.split())
+    if 5 <= word_count <= 20:
+        score += 15
+    elif word_count > 30:
+        score -= 10
+    elif word_count < 3:
+        score -= 15
+    
+    # Avoid repetitive characters
+    if any(char * 3 in text for char in 'abcdefghijklmnopqrstuvwxyz'):
+        score -= 15
+    
+    # Semantic coherence bonus
+    if all(word.replace(',', '').replace('.', '').replace('?', '').isalpha() or word in ['?', '.', ',', '(', ')'] for word in text.split()):
+        score += 10
+    
+    # Grammar patterns (basic)
+    if re.search(r'\b(what|how|when|where|why|which)\s+(is|are|do|does|did|will|would|can|could)\b', text):
+        score += 10
+    
+    return max(0, score)  # Ensure non-negative score
 
-# Monthly Quality Check Function
-def run_monthly_quality_check(df_reference):
-    """
-    Run comprehensive monthly quality check with governance compliance
-    """
-    logger.info("Starting monthly quality check...")
-    
-    quality_report = {
-        'check_date': datetime.now().isoformat(),
-        'total_questions': len(df_reference),
-        'unique_uids': df_reference['uid'].nunique(),
-        'governance_violations': [],
-        'quality_issues': [],
-        'recommendations': []
-    }
-    
-    # Check governance violations
-    uid_counts = df_reference['uid'].value_counts()
-    violations = uid_counts[uid_counts > UID_GOVERNANCE['max_variations_per_uid']]
-    
-    for uid, count in violations.items():
-        quality_report['governance_violations'].append({
-            'uid': uid,
-            'variation_count': count,
-            'excess': count - UID_GOVERNANCE['max_variations_per_uid'],
-            'severity': 'high' if count > UID_GOVERNANCE['max_variations_per_uid'] * 2 else 'medium'
-        })
-    
-    # Check quality issues
-    for uid in df_reference['uid'].unique():
-        uid_questions = df_reference[df_reference['uid'] == uid]['heading_0'].tolist()
-        
-        # Check for low quality questions
-        low_quality = [q for q in uid_questions if score_question_quality(q) < UID_GOVERNANCE['quality_score_threshold']]
-        if low_quality:
-            quality_report['quality_issues'].append({
-                'uid': uid,
-                'low_quality_count': len(low_quality),
-                'total_variations': len(uid_questions),
-                'sample_low_quality': low_quality[:3]
-            })
-    
-    # Generate recommendations
-    if quality_report['governance_violations']:
-        quality_report['recommendations'].append("Implement UID consolidation for governance violations")
-    
-    if quality_report['quality_issues']:
-        quality_report['recommendations'].append("Review and improve low-quality question variations")
-    
-    quality_report['recommendations'].append("Run semantic deduplication to reduce variations")
-    
-    return quality_report
+# ========================
+# NEW: Advanced Semantic Matching Functions
+# ========================
 
-# Enhanced Conflict Detection
-def detect_advanced_uid_conflicts(df_reference):
-    """
-    Advanced conflict detection with semantic analysis and governance checks
-    """
-    conflicts = []
-    
-    # Group by UID
-    uid_groups = df_reference.groupby('uid')
-    
-    for uid, group in uid_groups:
-        questions = group['heading_0'].unique()
-        
-        # Governance violation check
-        if len(questions) > UID_GOVERNANCE['max_variations_per_uid']:
-            conflicts.append({
-                'uid': uid,
-                'type': 'governance_violation',
-                'count': len(questions),
-                'max_allowed': UID_GOVERNANCE['max_variations_per_uid'],
-                'severity': 'high' if len(questions) > UID_GOVERNANCE['max_variations_per_uid'] * 2 else 'medium',
-                'auto_fix_available': True
-            })
-        
-        # Semantic conflict detection
-        if len(questions) > 1 and UID_GOVERNANCE['semantic_matching_enabled']:
-            try:
-                model = load_sentence_transformer()
-                embeddings = model.encode(list(questions), convert_to_tensor=True)
-                similarities = util.cos_sim(embeddings, embeddings)
-                
-                # Find questions that are too different (potential conflicts)
-                avg_similarity = similarities.mean().item()
-                if avg_similarity < 0.7:  # Low average similarity indicates potential conflicts
-                    conflicts.append({
-                        'uid': uid,
-                        'type': 'semantic_conflict',
-                        'avg_similarity': avg_similarity,
-                        'question_count': len(questions),
-                        'severity': 'medium',
-                        'sample_questions': list(questions)[:3]
-                    })
-                    
-            except Exception as e:
-                logger.error(f"Semantic conflict detection failed for UID {uid}: {e}")
-        
-        # Quality inconsistency check
-        quality_scores = [score_question_quality(q) for q in questions]
-        quality_std = np.std(quality_scores)
-        
-        if quality_std > 5.0:  # High variation in quality scores
-            conflicts.append({
-                'uid': uid,
-                'type': 'quality_inconsistency',
-                'quality_std': quality_std,
-                'quality_range': (min(quality_scores), max(quality_scores)),
-                'severity': 'low',
-                'recommendations': ['Review question variations for quality consistency']
-            })
-    
-    # Cross-UID semantic conflicts (questions that should have the same UID)
-    if UID_GOVERNANCE['semantic_matching_enabled']:
-        try:
-            model = load_sentence_transformer()
-            unique_questions_df = create_unique_questions_bank(df_reference)
-            
-            if len(unique_questions_df) > 1:
-                best_questions = unique_questions_df['best_question'].tolist()
-                uids = unique_questions_df['uid'].tolist()
-                
-                embeddings = model.encode(best_questions, convert_to_tensor=True)
-                similarities = util.cos_sim(embeddings, embeddings)
-                
-                # Find pairs with high similarity but different UIDs
-                for i in range(len(uids)):
-                    for j in range(i + 1, len(uids)):
-                        similarity = similarities[i][j].item()
-                        if similarity > UID_GOVERNANCE['auto_consolidate_threshold']:
-                            conflicts.append({
-                                'type': 'cross_uid_semantic_match',
-                                'uid1': uids[i],
-                                'uid2': uids[j],
-                                'similarity': similarity,
-                                'question1': best_questions[i],
-                                'question2': best_questions[j],
-                                'severity': 'high',
-                                'auto_consolidate_recommended': True
-                            })
-                            
-        except Exception as e:
-            logger.error(f"Cross-UID conflict detection failed: {e}")
-    
-    return conflicts
-
-# Enhanced unique questions bank with categories
-def create_enhanced_unique_questions_bank(df_reference):
-    """
-    Enhanced unique questions bank with survey categorization and governance compliance
-    """
-    if df_reference.empty:
-        return pd.DataFrame()
-    
-    logger.info(f"Processing {len(df_reference)} reference questions for enhanced unique bank")
-    
-    unique_questions = []
-    uid_groups = df_reference.groupby('uid')
-    
-    for uid, group in uid_groups:
-        if pd.isna(uid):
-            continue
-            
-        uid_questions = group['heading_0'].tolist()
-        best_question = get_best_question_for_uid(uid_questions)
-        
-        # Enhanced survey categorization
-        survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
-        
-        # Determine primary category with confidence scoring
-        category_votes = {}
-        for title in survey_titles:
-            category = categorize_survey(title)
-            category_votes[category] = category_votes.get(category, 0) + 1
-        
-        if category_votes:
-            primary_category = max(category_votes, key=category_votes.get)
-            category_confidence = category_votes[primary_category] / len(survey_titles)
-        else:
-            primary_category = "Unknown"
-            category_confidence = 0.0
-        
-        # Calculate governance compliance
-        governance_compliant = len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid']
-        
-        # Calculate quality metrics
-        quality_scores = [score_question_quality(q) for q in uid_questions]
-        avg_quality = np.mean(quality_scores)
-        quality_std = np.std(quality_scores)
-        
-        # Detect potential issues
-        issues = []
-        if not governance_compliant:
-            issues.append("governance_violation")
-        if avg_quality < UID_GOVERNANCE['quality_score_threshold']:
-            issues.append("low_quality")
-        if quality_std > 5.0:
-            issues.append("quality_inconsistency")
-        
-        if best_question:
-            unique_questions.append({
-                'uid': uid,
-                'best_question': best_question,
-                'standardized_question': standardize_question_format(best_question),
-                'total_variants': len(uid_questions),
-                'question_length': len(str(best_question)),
-                'question_words': len(str(best_question).split()),
-                'survey_category': primary_category,
-                'category_confidence': round(category_confidence, 2),
-                'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
-                'quality_score': round(avg_quality, 1),
-                'quality_std': round(quality_std, 1),
-                'governance_compliant': governance_compliant,
-                'issues': ', '.join(issues) if issues else 'none',
-                'created_date': datetime.now().isoformat(),
-                'last_updated': datetime.now().isoformat(),
-                'all_variants': uid_questions
-            })
-    
-    unique_df = pd.DataFrame(unique_questions)
-    logger.info(f"Created enhanced unique questions bank with {len(unique_df)} UIDs")
-    
-    # Sort by UID
-    if not unique_df.empty:
-        try:
-            unique_df['uid_numeric'] = pd.to_numeric(unique_df['uid'], errors='coerce')
-            unique_df = unique_df.sort_values(['uid_numeric', 'uid'], na_position='last')
-            unique_df = unique_df.drop('uid_numeric', axis=1)
-        except:
-            unique_df = unique_df.sort_values('uid')
-    
-    return unique_df
-
-# Enhanced Configure Survey Page
-def enhanced_configure_survey_page():
-    """
-    Enhanced configure survey page with semantic matching and governance
-    """
-    st.markdown("## ⚙️ Enhanced Configure Survey with Semantic Matching")
-    st.markdown("*Advanced UID assignment with semantic matching, governance rules, and standardized formatting*")
-    
-    # Display governance settings
-    with st.expander("⚖️ Governance & Matching Settings", expanded=False):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**UID Governance Rules:**")
-            st.write(f"• Max variations per UID: {UID_GOVERNANCE['max_variations_per_uid']}")
-            st.write(f"• Semantic similarity threshold: {UID_GOVERNANCE['semantic_similarity_threshold']}")
-            st.write(f"• Quality score threshold: {UID_GOVERNANCE['quality_score_threshold']}")
-            st.write(f"• Conflict detection: {'✅' if UID_GOVERNANCE['conflict_detection_enabled'] else '❌'}")
-        
-        with col2:
-            st.markdown("**Matching Features:**")
-            st.write(f"• Semantic matching: {'✅' if UID_GOVERNANCE['semantic_matching_enabled'] else '❌'}")
-            st.write(f"• Standardized formatting: {'✅' if UID_GOVERNANCE['standardized_format_required'] else '❌'}")
-            st.write(f"• Monthly quality checks: {'✅' if UID_GOVERNANCE['monthly_quality_check'] else '❌'}")
-    
-    # Token input
-    surveymonkey_token = st.text_input("🔑 SurveyMonkey API Token", type="password", 
-                                      value=st.secrets.get("surveymonkey", {}).get("token", ""))
-    
-    if not surveymonkey_token:
-        st.warning("⚠️ Please enter your SurveyMonkey API token to continue.")
-        return
-    
-    try:
-        # Load reference data with governance check
-        with st.spinner("🔄 Loading reference data and checking governance..."):
-            df_reference = get_all_reference_questions()
-            
-            if df_reference.empty:
-                st.error("❌ No reference questions found. Cannot proceed with UID matching.")
-                return
-            
-            # Run governance check
-            conflicts = detect_advanced_uid_conflicts(df_reference)
-            governance_violations = [c for c in conflicts if c['type'] == 'governance_violation']
-            
-            if governance_violations:
-                st.warning(f"⚠️ Found {len(governance_violations)} governance violations in reference data")
-                with st.expander("View Governance Issues"):
-                    for violation in governance_violations:
-                        st.error(f"UID {violation['uid']}: {violation['count']} variations (max: {violation['max_allowed']})")
-        
-        # Survey selection
-        surveys = get_surveys(surveymonkey_token)
-        if not surveys:
-            st.error("❌ No surveys found or API error.")
-            return
-        
-        survey_options = {f"{s['id']} - {s['title']}": s['id'] for s in surveys}
-        selected_survey = st.selectbox("📋 Select Survey to Configure", list(survey_options.keys()))
-        
-        if selected_survey:
-            survey_id = survey_options[selected_survey]
-            
-            # Matching settings
-            st.markdown("### 🔧 Enhanced Matching Settings")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                use_semantic = st.checkbox("🧠 Use Semantic Matching", value=True, 
-                                         help="Enable AI-powered semantic similarity matching")
-                semantic_threshold = st.slider("Semantic Threshold", 0.5, 0.95, 
-                                             float(UID_GOVERNANCE['semantic_similarity_threshold']), 0.05)
-            
-            with col2:
-                force_standardization = st.checkbox("📝 Force Question Standardization", value=True,
-                                                   help="Standardize question format before UID assignment")
-                auto_categorize = st.checkbox("📊 Auto-categorize by Survey Title", value=True,
-                                            help="Automatically categorize questions based on survey title")
-            
-            with col3:
-                governance_mode = st.selectbox("⚖️ Governance Mode", 
-                                             ["Strict", "Moderate", "Permissive"],
-                                             help="Strict: Enforce all rules, Moderate: Warn on violations, Permissive: Log only")
-                
-                create_new_uids = st.checkbox("➕ Allow New UID Creation", value=True,
-                                            help="Create new UIDs when no good match is found")
-            
-            # Process survey button
-            if st.button("🚀 Process Survey with Enhanced Matching", type="primary"):
-                with st.spinner("🔄 Processing survey with enhanced semantic matching..."):
-                    
-                    # Get survey details
-                    survey_details = get_survey_details(survey_id, surveymonkey_token)
-                    questions_data = extract_questions(survey_details)
-                    df_target = pd.DataFrame(questions_data)
-                    
-                    if df_target.empty:
-                        st.error("❌ No questions found in the selected survey.")
-                        return
-                    
-                    # Auto-categorize survey if enabled
-                    survey_category = None
-                    if auto_categorize:
-                        survey_title = survey_details.get('title', '')
-                        survey_category = categorize_survey(survey_title)
-                        st.info(f"📊 Auto-detected survey category: **{survey_category}**")
-                    
-                    # Create enhanced UID assignments
-                    enhanced_results = []
-                    existing_uids_data = {}
-                    
-                    # Build existing UIDs data structure
-                    unique_bank = create_enhanced_unique_questions_bank(df_reference)
-                    for _, row in unique_bank.iterrows():
-                        existing_uids_data[row['uid']] = {
-                            'best_question': row['best_question'],
-                            'variation_count': row['total_variants'],
-                            'survey_category': row['survey_category'],
-                            'quality_score': row['quality_score']
-                        }
-                    
-                    # Process each question
-                    progress_bar = st.progress(0)
-                    for i, (_, question_row) in enumerate(df_target.iterrows()):
-                        
-                        if question_row.get('question_category') == 'Heading':
-                            # Skip headings for UID assignment
-                            enhanced_results.append({
-                                **question_row.to_dict(),
-                                'Enhanced_UID': None,
-                                'Enhancement_Method': 'heading_skipped',
-                                'Enhancement_Confidence': 0.0,
-                                'Governance_Status': 'N/A',
-                                'Standardized_Question': question_row['heading_0']
-                            })
-                        else:
-                            # Apply enhanced UID assignment
-                            assignment_result = assign_uid_with_enhanced_governance(
-                                question_row['heading_0'],
-                                existing_uids_data,
-                                survey_category,
-                                force_new=not use_semantic
-                            )
-                            
-                            # Apply governance checks
-                            governance_status = "✅"
-                            if governance_mode == "Strict" and not assignment_result['governance_compliant']:
-                                governance_status = "❌"
-                            elif governance_mode == "Moderate" and not assignment_result['governance_compliant']:
-                                governance_status = "⚠️"
-                            
-                            enhanced_results.append({
-                                **question_row.to_dict(),
-                                'Enhanced_UID': assignment_result['uid'],
-                                'Enhancement_Method': assignment_result['method'],
-                                'Enhancement_Confidence': round(assignment_result['confidence'], 3),
-                                'Governance_Status': governance_status,
-                                'Standardized_Question': assignment_result['standardized_question']
-                            })
-                        
-                        progress_bar.progress((i + 1) / len(df_target))
-                    
-                    # Create results dataframe
-                    df_enhanced = pd.DataFrame(enhanced_results)
-                    
-                    # Apply choice inheritance (choices get parent question's UID)
-                    for i, row in df_enhanced.iterrows():
-                        if row.get('is_choice') and row.get('parent_question'):
-                            parent_uid = df_enhanced[
-                                (df_enhanced['heading_0'] == row['parent_question']) & 
-                                (df_enhanced['is_choice'] == False)
-                            ]['Enhanced_UID'].iloc[0] if len(df_enhanced[
-                                (df_enhanced['heading_0'] == row['parent_question']) & 
-                                (df_enhanced['is_choice'] == False)
-                            ]) > 0 else None
-                            
-                            if parent_uid:
-                                df_enhanced.at[i, 'Enhanced_UID'] = parent_uid
-                                df_enhanced.at[i, 'Enhancement_Method'] = 'choice_inheritance'
-                    
-                    # Store results in session state
-                    st.session_state.df_enhanced = df_enhanced
-                    st.session_state.survey_category = survey_category
-                    
-                    # Display results summary
-                    st.success("✅ Enhanced processing completed!")
-                    
-                    # Enhanced summary metrics
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        total_questions = len(df_enhanced[df_enhanced['is_choice'] == False])
-                        st.metric("📊 Total Questions", total_questions)
-                    
-                    with col2:
-                        matched_questions = len(df_enhanced[
-                            (df_enhanced['Enhanced_UID'].notna()) & 
-                            (df_enhanced['is_choice'] == False) &
-                            (df_enhanced['Enhancement_Method'] == 'semantic_match')
-                        ])
-                        st.metric("🧠 Semantic Matches", matched_questions)
-                    
-                    with col3:
-                        new_uids = len(df_enhanced[
-                            (df_enhanced['Enhanced_UID'].notna()) & 
-                            (df_enhanced['is_choice'] == False) &
-                            (df_enhanced['Enhancement_Method'] == 'new_assignment')
-                        ])
-                        st.metric("➕ New UIDs", new_uids)
-                    
-                    with col4:
-                        governance_compliant = len(df_enhanced[df_enhanced['Governance_Status'] == '✅'])
-                        total_with_uid = len(df_enhanced[df_enhanced['Enhanced_UID'].notna()])
-                        compliance_rate = (governance_compliant / total_with_uid * 100) if total_with_uid > 0 else 0
-                        st.metric("⚖️ Governance Rate", f"{compliance_rate:.1f}%")
-                    
-                    # Display method breakdown
-                    st.markdown("### 📊 Enhancement Method Breakdown")
-                    method_counts = df_enhanced[df_enhanced['is_choice'] == False]['Enhancement_Method'].value_counts()
-                    
-                    method_cols = st.columns(len(method_counts))
-                    for i, (method, count) in enumerate(method_counts.items()):
-                        with method_cols[i]:
-                            method_name = method.replace('_', ' ').title()
-                            st.metric(f"🔧 {method_name}", count)
-                    
-                    # Show sample results
-                    st.markdown("### 📋 Sample Enhanced Results")
-                    sample_df = df_enhanced[df_enhanced['is_choice'] == False].head(10)[
-                        ['heading_0', 'Enhanced_UID', 'Enhancement_Method', 'Enhancement_Confidence', 'Governance_Status', 'Standardized_Question']
-                    ].copy()
-                    
-                    sample_df = sample_df.rename(columns={
-                        'heading_0': 'Original Question',
-                        'Enhanced_UID': 'Assigned UID',
-                        'Enhancement_Method': 'Method',
-                        'Enhancement_Confidence': 'Confidence',
-                        'Governance_Status': 'Governance',
-                        'Standardized_Question': 'Standardized Format'
-                    })
-                    
-                    st.dataframe(sample_df, use_container_width=True)
-                    
-                    # Download enhanced results
-                    st.markdown("### 📥 Download Enhanced Results")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.download_button(
-                            "📥 Download All Enhanced Results",
-                            df_enhanced.to_csv(index=False),
-                            f"enhanced_survey_results_{survey_id}_{uuid4()}.csv",
-                            "text/csv",
-                            use_container_width=True
-                        )
-                    
-                    with col2:
-                        # Create governance report
-                        governance_report = df_enhanced[
-                            df_enhanced['Governance_Status'].isin(['❌', '⚠️'])
-                        ][['heading_0', 'Enhanced_UID', 'Enhancement_Method', 'Governance_Status']].copy()
-                        
-                        if not governance_report.empty:
-                            st.download_button(
-                                "⚖️ Download Governance Issues",
-                                governance_report.to_csv(index=False),
-                                f"governance_issues_{survey_id}_{uuid4()}.csv",
-                                "text/csv",
-                                use_container_width=True
-                            )
-    
-    except Exception as e:
-        logger.error(f"Enhanced configure survey failed: {e}")
-        st.error(f"❌ Error: {e}")
-
-# Rest of the existing functions remain the same...
-
-# Cached Resources
 @st.cache_resource
 def load_sentence_transformer():
+    """Load and cache the sentence transformer model"""
     logger.info(f"Loading SentenceTransformer model: {MODEL_NAME}")
     try:
         return SentenceTransformer(MODEL_NAME)
@@ -846,342 +320,820 @@ def load_sentence_transformer():
         logger.error(f"Failed to load SentenceTransformer: {e}")
         raise
 
-@st.cache_resource
-def get_snowflake_engine():
+def compute_semantic_similarity(question1, question2, model=None):
+    """
+    Compute semantic similarity between two questions
+    """
+    if not model:
+        model = load_sentence_transformer()
+    
     try:
-        sf = st.secrets["snowflake"]
-        logger.info(f"Attempting Snowflake connection: user={sf.user}, account={sf.account}")
-        engine = create_engine(
-            f"snowflake://{sf.user}:{sf.password}@{sf.account}/{sf.database}/{sf.schema}"
-            f"?warehouse={sf.warehouse}&role={sf.role}"
-        )
-        with engine.connect() as conn:
-            conn.execute(text("SELECT CURRENT_VERSION()"))
-        return engine
+        # Standardize both questions first
+        q1_std = standardize_question_format(question1)
+        q2_std = standardize_question_format(question2)
+        
+        # Get embeddings
+        embeddings = model.encode([q1_std, q2_std], convert_to_tensor=True)
+        
+        # Calculate cosine similarity
+        similarity = util.cos_sim(embeddings[0], embeddings[1]).item()
+        
+        return similarity
     except Exception as e:
-        logger.error(f"Snowflake engine creation failed: {e}")
-        if "250001" in str(e):
-            st.warning(
-                "🔒 Snowflake connection failed: User account is locked. "
-                "UID matching is disabled, but you can edit questions, search, and use Google Forms. "
-                "Visit: https://community.snowflake.com/s/error-your-user-login-has-been-locked"
-            )
-        raise
+        logger.error(f"Semantic similarity calculation failed: {e}")
+        return 0.0
 
-@st.cache_data
-def get_tfidf_vectors(df_reference):
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-    vectors = vectorizer.fit_transform(df_reference["norm_text"])
-    return vectorizer, vectors
-
-# Enhanced Normalization
-def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
-    text = str(text).lower()
-    text = re.sub(r'\(.*?\)', '', text)
-    text = re.sub(r'[^a-z0-9 ]', '', text)
+def find_best_semantic_match(question_text, existing_uids_data, threshold=None):
+    """
+    Find the best semantic match for a question using advanced matching
+    """
+    if not existing_uids_data:
+        return None, 0.0, {}
     
-    # Apply enhanced synonym mapping
-    for phrase, replacement in synonym_map.items():
-        text = text.replace(phrase, replacement)
-    
-    return ' '.join(w for w in text.split() if w not in ENGLISH_STOP_WORDS)
-
-def get_best_question_for_uid(questions_list):
-    """Enhanced question selection with quality scoring"""
-    if not questions_list:
-        return None
-    
-    # Score each question based on enhanced quality indicators
-    scored_questions = [(q, score_question_quality(q)) for q in questions_list]
-    best_question = max(scored_questions, key=lambda x: x[1])
-    return best_question[0]
-
-def score_question_quality(question):
-    """Enhanced scoring function for question quality"""
-    score = 0
-    text = str(question).lower().strip()
-    
-    # Length scoring (sweet spot is 10-100 characters)
-    length = len(text)
-    if 10 <= length <= 100:
-        score += 20
-    elif 5 <= length <= 150:
-        score += 10
-    elif length < 5:
-        score -= 20
-    
-    # Question format scoring
-    if text.endswith('?'):
-        score += 15
-    
-    # English question word scoring
-    question_words = ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should']
-    if any(word in text.split()[:3] for word in question_words):
-        score += 15
-    
-    # Proper capitalization
-    if question and question[0].isupper():
-        score += 10
-    
-    # Avoid artifacts (enhanced list)
-    bad_patterns = ['click here', 'please select', '...', 'n/a', 'other', 'select one', 'choose all', 'privacy policy']
-    if any(pattern in text for pattern in bad_patterns):
-        score -= 15
-    
-    # Avoid HTML
-    if '<' in text and '>' in text:
-        score -= 20
-    
-    # Prefer complete sentences
-    word_count = len(text.split())
-    if 5 <= word_count <= 20:
-        score += 10
-    elif word_count > 30:
-        score -= 5
-    
-    # Avoid repetitive characters
-    if any(char * 3 in text for char in 'abcdefghijklmnopqrstuvwxyz'):
-        score -= 10
-    
-    # Semantic coherence bonus
-    if all(word.isalpha() or word in ['?', '.', ','] for word in text.split()):
-        score += 5
-    
-    return score
-
-# Snowflake query functions
-def run_snowflake_reference_query_all():
-    """Fetch ALL reference questions from Snowflake with pagination"""
-    all_data = []
-    limit = 10000
-    offset = 0
-    
-    # First, try to get available columns
-    columns_to_select = "HEADING_0, UID"
-    survey_title_available = False
+    if threshold is None:
+        threshold = UID_GOVERNANCE['semantic_similarity_threshold']
     
     try:
-        with get_snowflake_engine().connect() as conn:
-            # Check if SURVEY_TITLE column exists
-            check_query = """
-                SELECT COLUMN_NAME 
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_NAME = 'SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' 
-                AND TABLE_SCHEMA = 'DBT_SURVEY_MONKEY'
-                AND COLUMN_NAME = 'SURVEY_TITLE'
-            """
-            column_check = pd.read_sql(text(check_query), conn)
-            
-            if not column_check.empty:
-                columns_to_select = "HEADING_0, UID, SURVEY_TITLE"
-                survey_title_available = True
-                logger.info("SURVEY_TITLE column found, including in query")
+        model = load_sentence_transformer()
+        
+        # Standardize input question
+        std_question = standardize_question_format(question_text)
+        
+        # Get all existing questions
+        existing_questions = []
+        uid_mapping = {}
+        
+        for uid, data in existing_uids_data.items():
+            if isinstance(data, dict) and 'best_question' in data:
+                question = data['best_question']
             else:
-                logger.warning("SURVEY_TITLE column not found, proceeding without it")
-    except Exception as e:
-        logger.warning(f"Could not check column existence: {e}, proceeding with basic columns")
-    
-    while True:
-        query = f"""
-            SELECT {columns_to_select}
-            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-            WHERE UID IS NOT NULL
-            ORDER BY CAST(UID AS INTEGER) ASC
-            LIMIT :limit OFFSET :offset
-        """
-        try:
-            with get_snowflake_engine().connect() as conn:
-                result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
+                question = str(data)
             
-def run_snowflake_reference_query_all():
-    """Fetch ALL reference questions from Snowflake with pagination"""
-    all_data = []
-    limit = 10000
-    offset = 0
+            std_existing = standardize_question_format(question)
+            existing_questions.append(std_existing)
+            uid_mapping[len(existing_questions) - 1] = uid
+        
+        if not existing_questions:
+            return None, 0.0, {}
+        
+        # Calculate embeddings
+        input_embedding = model.encode([std_question], convert_to_tensor=True)
+        existing_embeddings = model.encode(existing_questions, convert_to_tensor=True)
+        
+        # Calculate similarities
+        similarities = util.cos_sim(input_embedding, existing_embeddings)[0]
+        
+        # Find best match
+        best_idx = similarities.argmax().item()
+        best_score = similarities[best_idx].item()
+        
+        match_details = {
+            'original_question': question_text,
+            'standardized_question': std_question,
+            'matched_question': existing_questions[best_idx],
+            'original_matched_question': list(existing_uids_data.values())[best_idx] if isinstance(list(existing_uids_data.values())[best_idx], str) else list(existing_uids_data.values())[best_idx].get('best_question', ''),
+            'similarity_score': best_score,
+            'threshold_met': best_score >= threshold,
+            'confidence_level': 'High' if best_score >= 0.9 else 'Medium' if best_score >= 0.75 else 'Low'
+        }
+        
+        if best_score >= threshold:
+            matched_uid = uid_mapping[best_idx]
+            return matched_uid, best_score, match_details
+        
+        return None, best_score, match_details
+        
+    except Exception as e:
+        logger.error(f"Semantic matching failed: {e}")
+        return None, 0.0, {'error': str(e)}
+
+# ========================
+# NEW: UID Governance Functions
+# ========================
+
+def check_uid_governance_compliance(uid, existing_uids_data):
+    """
+    Check if assigning a new variation to a UID would violate governance rules
+    """
+    if not UID_GOVERNANCE['conflict_detection_enabled']:
+        return True, "Governance checking disabled"
     
-    # First, try with SURVEY_TITLE, then fallback to basic query
-    queries_to_try = [
-        # Try with SURVEY_TITLE first
-        """
-            SELECT HEADING_0, UID, SURVEY_TITLE
-            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-            WHERE UID IS NOT NULL
-            ORDER BY CAST(UID AS INTEGER) ASC
-            LIMIT :limit OFFSET :offset
-        """,
-        # Fallback to basic query without SURVEY_TITLE
-        """
-            SELECT HEADING_0, UID
-            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-            WHERE UID IS NOT NULL
-            ORDER BY CAST(UID AS INTEGER) ASC
-            LIMIT :limit OFFSET :offset
-        """
-    ]
+    if uid not in existing_uids_data:
+        return True, "New UID - compliant"
     
-    query_used = None
-    survey_title_available = False
+    uid_data = existing_uids_data[uid]
     
-    # Test which query works
-    for i, test_query in enumerate(queries_to_try):
+    if isinstance(uid_data, dict):
+        current_variations = uid_data.get('variation_count', 1)
+    else:
+        # Count variations manually if not tracked
+        current_variations = 1  # Simplified for this example
+    
+    max_allowed = UID_GOVERNANCE['max_variations_per_uid']
+    
+    if current_variations >= max_allowed:
+        return False, f"Exceeds max variations ({current_variations}/{max_allowed})"
+    
+    return True, f"Within limits ({current_variations}/{max_allowed})"
+
+def get_next_available_uid(existing_uids_data):
+    """
+    Get the next available UID following governance rules
+    """
+    if not existing_uids_data:
+        return "1"
+    
+    # Extract numeric UIDs
+    numeric_uids = []
+    for uid in existing_uids_data.keys():
         try:
-            with get_snowflake_engine().connect() as conn:
-                test_result = pd.read_sql(text(test_query), conn, params={"limit": 1, "offset": 0})
-                query_used = test_query
-                survey_title_available = 'SURVEY_TITLE' in test_result.columns
-                logger.info(f"Using query {i+1}, SURVEY_TITLE available: {survey_title_available}")
-                break
-        except Exception as e:
-            logger.warning(f"Query {i+1} failed: {e}")
+            numeric_uids.append(int(uid))
+        except ValueError:
             continue
     
-    if not query_used:
-        raise Exception("No working query found for Snowflake table")
+    if not numeric_uids:
+        return "1"
     
-    # Now fetch all data using the working query
-    while True:
-        try:
-            with get_snowflake_engine().connect() as conn:
-                result = pd.read_sql(text(query_used), conn, params={"limit": limit, "offset": offset})
-            
-            # Add SURVEY_TITLE column if it doesn't exist
-            if not survey_title_available and 'SURVEY_TITLE' not in result.columns:
-                result['SURVEY_TITLE'] = 'Unknown Survey'
-            
-            if result.empty:
-                break  # No more data
-                
-            all_data.append(result)
-            offset += limit
-            
-            # Log progress
-            logger.info(f"Fetched {len(result)} rows, total so far: {sum(len(df) for df in all_data)}")
-            
-            # Break if we got less than the limit (last batch)
-            if len(result) < limit:
-                break
-                
-        except Exception as e:
-            logger.error(f"Snowflake reference query failed at offset {offset}: {e}")
-            if "invalid identifier" in str(e).lower():
-                st.warning(
-                    f"⚠️ Column 'SURVEY_TITLE' not found in Snowflake table. "
-                    f"Survey categorization will use default values. "
-                    f"Consider adding SURVEY_TITLE to your Snowflake table schema."
-                )
-            raise
+    return str(max(numeric_uids) + 1)
+
+def assign_uid_with_semantic_governance(question_text, existing_uids_data, force_new=False):
+    """
+    Assign UID using semantic matching and governance rules
+    """
+    result = {
+        'assigned_uid': None,
+        'method': 'unknown',
+        'confidence': 0.0,
+        'governance_compliant': True,
+        'standardized_question': standardize_question_format(question_text),
+        'quality_score': calculate_question_quality_score(question_text),
+        'match_details': {},
+        'governance_check': {},
+        'recommendations': []
+    }
     
-    if all_data:
-        final_df = pd.concat(all_data, ignore_index=True)
-        logger.info(f"Total reference questions fetched: {len(final_df)}")
+    # Standardize the question first
+    std_question = standardize_question_format(question_text)
+    result['standardized_question'] = std_question
+    
+    # Skip UID assignment for low-quality questions
+    if result['quality_score'] < UID_GOVERNANCE['quality_score_threshold']:
+        result['recommendations'].append(f"Question quality score ({result['quality_score']:.1f}) below threshold ({UID_GOVERNANCE['quality_score_threshold']})")
+        if not force_new:
+            return result
+    
+    # Try semantic matching first
+    if not force_new and existing_uids_data:
+        matched_uid, similarity, match_details = find_best_semantic_match(std_question, existing_uids_data)
+        result['match_details'] = match_details
         
-        # Ensure SURVEY_TITLE column exists for compatibility
-        if 'SURVEY_TITLE' not in final_df.columns:
-            final_df['SURVEY_TITLE'] = 'Unknown Survey'
+        if matched_uid:
+            # Check governance compliance for this UID
+            is_compliant, governance_msg = check_uid_governance_compliance(matched_uid, existing_uids_data)
+            result['governance_check'] = {
+                'uid': matched_uid,
+                'compliant': is_compliant,
+                'message': governance_msg
+            }
             
-        return final_df
-    else:
-        logger.warning("No reference data fetched")
-        return pd.DataFrame()
-
-# Add a helper function to check table schema
-def check_snowflake_table_schema():
-    """Check the available columns in the Snowflake table"""
-    try:
-        with get_snowflake_engine().connect() as conn:
-            schema_query = """
-                SELECT COLUMN_NAME, DATA_TYPE 
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_NAME = 'SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' 
-                AND TABLE_SCHEMA = 'DBT_SURVEY_MONKEY'
-                ORDER BY ORDINAL_POSITION
-            """
-            schema_df = pd.read_sql(text(schema_query), conn)
-            return schema_df
-    except Exception as e:
-        logger.error(f"Could not check table schema: {e}")
-        return pd.DataFrame()
-
-# Enhanced survey categorization that works without SURVEY_TITLE
-def categorize_survey_from_question(question_text):
-    """
-    Fallback categorization based on question content when SURVEY_TITLE is not available
-    """
-    if not question_text or pd.isna(question_text):
-        return "Unknown"
+            if is_compliant:
+                result['assigned_uid'] = matched_uid
+                result['method'] = 'semantic_match'
+                result['confidence'] = similarity
+                result['recommendations'].append(f"Semantically matched to existing UID {matched_uid} (similarity: {similarity:.3f})")
+                return result
+            else:
+                result['recommendations'].append(f"Best semantic match UID {matched_uid} violates governance: {governance_msg}")
+                # Fall through to create new UID
     
-    text_lower = str(question_text).lower()
+    # Assign new UID
+    new_uid = get_next_available_uid(existing_uids_data)
+    result['assigned_uid'] = new_uid
+    result['method'] = 'new_assignment'
+    result['confidence'] = 1.0
+    result['governance_check'] = {
+        'uid': new_uid,
+        'compliant': True,
+        'message': 'New UID assignment'
+    }
+    result['recommendations'].append(f"Assigned new UID {new_uid}")
     
-    # Check for category indicators in question text
-    category_indicators = {
-        'Application': ['apply', 'application', 'register', 'signup', 'join'],
-        'Pre programme': ['before', 'pre-', 'baseline', 'preparation', 'ready'],
-        'Enrollment': ['welcome', 'start', 'begin', 'onboard', 'enroll'],
-        'Progress Review': ['progress', 'review', 'milestone', 'check', 'assessment'],
-        'Impact': ['impact', 'outcome', 'result', 'after', 'completion', 'effect'],
-        'GROW': ['GROW', 'goal', 'reality', 'options', 'will'],
-        'Feedback': ['feedback', 'satisfaction', 'rating', 'opinion', 'evaluate'],
-        'Pulse': ['pulse', 'quick', 'brief', 'temperature', 'snapshot']
+    return result
+
+# ========================
+# NEW: Conflict Detection Functions
+# ========================
+
+def detect_uid_conflicts_advanced(df_reference):
+    """
+    Advanced UID conflict detection with semantic analysis
+    """
+    conflicts = []
+    
+    if df_reference.empty:
+        return conflicts
+    
+    # Group by UID
+    uid_groups = df_reference.groupby('uid')
+    
+    for uid, group in uid_groups:
+        questions = group['heading_0'].dropna().unique()
+        
+        conflict_entry = {
+            'uid': uid,
+            'total_variations': len(questions),
+            'conflicts': []
+        }
+        
+        # Check for excessive variations
+        if len(questions) > UID_GOVERNANCE['max_variations_per_uid']:
+            conflict_entry['conflicts'].append({
+                'type': 'excessive_variations',
+                'count': len(questions),
+                'threshold': UID_GOVERNANCE['max_variations_per_uid'],
+                'severity': 'high' if len(questions) > UID_GOVERNANCE['max_variations_per_uid'] * 2 else 'medium'
+            })
+        
+        # Check for semantic inconsistencies within UID
+        if len(questions) > 1:
+            try:
+                model = load_sentence_transformer()
+                standardized_questions = [standardize_question_format(q) for q in questions]
+                
+                # Calculate pairwise similarities
+                embeddings = model.encode(standardized_questions, convert_to_tensor=True)
+                similarities = util.cos_sim(embeddings, embeddings)
+                
+                # Find questions that are too dissimilar
+                min_similarity_threshold = 0.7  # Questions in same UID should be similar
+                dissimilar_pairs = []
+                
+                for i in range(len(questions)):
+                    for j in range(i + 1, len(questions)):
+                        sim = similarities[i][j].item()
+                        if sim < min_similarity_threshold:
+                            dissimilar_pairs.append({
+                                'question1': questions[i][:100] + '...' if len(questions[i]) > 100 else questions[i],
+                                'question2': questions[j][:100] + '...' if len(questions[j]) > 100 else questions[j],
+                                'similarity': sim
+                            })
+                
+                if dissimilar_pairs:
+                    conflict_entry['conflicts'].append({
+                        'type': 'semantic_inconsistency',
+                        'dissimilar_pairs': dissimilar_pairs[:5],  # Limit to first 5
+                        'severity': 'medium'
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Semantic inconsistency check failed for UID {uid}: {e}")
+        
+        # Check for quality issues
+        quality_scores = [calculate_question_quality_score(q) for q in questions]
+        avg_quality = sum(quality_scores) / len(quality_scores)
+        
+        if avg_quality < UID_GOVERNANCE['quality_score_threshold']:
+            conflict_entry['conflicts'].append({
+                'type': 'low_quality',
+                'average_score': avg_quality,
+                'threshold': UID_GOVERNANCE['quality_score_threshold'],
+                'severity': 'low'
+            })
+        
+        # Only add if there are conflicts
+        if conflict_entry['conflicts']:
+            conflicts.append(conflict_entry)
+    
+    return conflicts
+
+def run_monthly_quality_check(df_reference):
+    """
+    Run monthly quality check as per governance rules
+    """
+    if not UID_GOVERNANCE['monthly_quality_check']:
+        return None
+    
+    logger.info("Running monthly quality check...")
+    
+    quality_report = {
+        'check_date': datetime.now().isoformat(),
+        'total_questions': len(df_reference),
+        'total_uids': df_reference['uid'].nunique(),
+        'conflicts': detect_uid_conflicts_advanced(df_reference),
+        'quality_metrics': {},
+        'recommendations': []
     }
     
-    for category, keywords in category_indicators.items():
-        if any(keyword.lower() in text_lower for keyword in keywords):
-            return category
+    # Calculate overall quality metrics
+    if not df_reference.empty:
+        questions = df_reference['heading_0'].dropna()
+        quality_scores = [calculate_question_quality_score(q) for q in questions]
+        
+        quality_report['quality_metrics'] = {
+            'average_quality_score': sum(quality_scores) / len(quality_scores),
+            'questions_below_threshold': sum(1 for score in quality_scores if score < UID_GOVERNANCE['quality_score_threshold']),
+            'percentage_below_threshold': (sum(1 for score in quality_scores if score < UID_GOVERNANCE['quality_score_threshold']) / len(quality_scores)) * 100
+        }
+        
+        # Generate recommendations
+        if quality_report['quality_metrics']['percentage_below_threshold'] > 10:
+            quality_report['recommendations'].append("High percentage of low-quality questions detected. Consider quality improvement initiative.")
+        
+        if len(quality_report['conflicts']) > 10:
+            quality_report['recommendations'].append("Multiple UID conflicts detected. Consider running cleanup process.")
+        
+        governance_violations = sum(1 for conflict in quality_report['conflicts'] 
+                                  if any(c['type'] == 'excessive_variations' for c in conflict['conflicts']))
+        
+        if governance_violations > 5:
+            quality_report['recommendations'].append(f"{governance_violations} UIDs violate governance rules. Immediate attention required.")
     
-    return "Other"
+    return quality_report
 
-# Add a helper function to check table schema
-def check_snowflake_table_schema():
-    """Check the available columns in the Snowflake table"""
+# ========================
+# ENHANCED: Configure Survey Page
+# ========================
+
+def enhanced_configure_survey_page():
+    """
+    Enhanced configure survey page with semantic matching and governance
+    """
+    st.markdown("## ⚙️ Enhanced Survey Configuration with Semantic Matching")
+    st.markdown("*AI-powered UID assignment with governance compliance and conflict detection*")
+    
+    # Governance status display
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown('<div class="governance-compliant">⚖️ Governance: ACTIVE</div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="info-card">🎯 Quality Threshold: {UID_GOVERNANCE["quality_score_threshold"]}</div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="info-card">🔢 Max Variations: {UID_GOVERNANCE["max_variations_per_uid"]}</div>', unsafe_allow_html=True)
+    
+    # Load reference data with caching
     try:
-        with get_snowflake_engine().connect() as conn:
-            schema_query = """
-                SELECT COLUMN_NAME, DATA_TYPE 
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_NAME = 'SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' 
-                AND TABLE_SCHEMA = 'DBT_SURVEY_MONKEY'
-                ORDER BY ORDINAL_POSITION
-            """
-            schema_df = pd.read_sql(text(schema_query), conn)
-            return schema_df
+        with st.spinner("🔄 Loading reference data for semantic matching..."):
+            if 'df_reference_cached' not in st.session_state:
+                st.session_state.df_reference_cached = get_all_reference_questions()
+            
+            df_reference = st.session_state.df_reference_cached
+            
+            if df_reference.empty:
+                st.warning("⚠️ No reference data available. UID matching will be limited.")
+                existing_uids_data = {}
+            else:
+                # Prepare existing UIDs data for semantic matching
+                existing_uids_data = {}
+                for _, row in df_reference.iterrows():
+                    uid = str(row['uid'])
+                    question = row['heading_0']
+                    
+                    if uid not in existing_uids_data:
+                        existing_uids_data[uid] = {
+                            'best_question': question,
+                            'variation_count': 1,
+                            'quality_score': calculate_question_quality_score(question)
+                        }
+                    else:
+                        existing_uids_data[uid]['variation_count'] += 1
+                        # Keep the best quality question
+                        current_score = calculate_question_quality_score(question)
+                        if current_score > existing_uids_data[uid]['quality_score']:
+                            existing_uids_data[uid]['best_question'] = question
+                            existing_uids_data[uid]['quality_score'] = current_score
+                
+                st.success(f"✅ Loaded {len(existing_uids_data)} unique UIDs for semantic matching")
+    
     except Exception as e:
-        logger.error(f"Could not check table schema: {e}")
-        return pd.DataFrame()
+        logger.error(f"Failed to load reference data: {e}")
+        st.error(f"❌ Failed to load reference data: {e}")
+        existing_uids_data = {}
+    
+    # Survey configuration options
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Survey Data", "🔧 UID Assignment", "⚖️ Governance Check", "📋 Results"])
+    
+    with tab1:
+        st.markdown("### 📊 Survey Data Input")
+        
+        # Survey data input methods
+        input_method = st.radio(
+            "Choose input method:",
+            ["SurveyMonkey API", "Upload CSV", "Manual Entry"],
+            horizontal=True
+        )
+        
+        survey_data = None
+        
+        if input_method == "SurveyMonkey API":
+            token = st.text_input("🔑 SurveyMonkey API Token", 
+                                type="password", 
+                                value=st.secrets.get("surveymonkey", {}).get("token", ""))
+            
+            if token:
+                try:
+                    surveys = get_surveys(token)
+                    if surveys:
+                        survey_options = {f"{s['id']} - {s['title']}": s['id'] for s in surveys}
+                        selected_survey = st.selectbox("📋 Select Survey", list(survey_options.keys()))
+                        
+                        if selected_survey and st.button("📥 Load Survey Data"):
+                            survey_id = survey_options[selected_survey]
+                            with st.spinner("Loading survey data..."):
+                                survey_details = get_survey_details(survey_id, token)
+                                questions = extract_questions(survey_details)
+                                survey_data = pd.DataFrame(questions)
+                                st.session_state.survey_data = survey_data
+                                st.success(f"✅ Loaded {len(survey_data)} questions from survey")
+                except Exception as e:
+                    st.error(f"❌ SurveyMonkey API error: {e}")
+        
+        elif input_method == "Upload CSV":
+            uploaded_file = st.file_uploader("📁 Upload CSV file", type=['csv'])
+            if uploaded_file:
+                try:
+                    survey_data = pd.read_csv(uploaded_file)
+                    st.session_state.survey_data = survey_data
+                    st.success(f"✅ Loaded {len(survey_data)} rows from CSV")
+                    st.dataframe(survey_data.head())
+                except Exception as e:
+                    st.error(f"❌ CSV loading error: {e}")
+        
+        elif input_method == "Manual Entry":
+            st.markdown("#### ✏️ Enter Questions Manually")
+            
+            manual_questions = st.text_area(
+                "Enter questions (one per line):",
+                height=200,
+                placeholder="What is your name?\nHow old are you?\nWhat is your occupation?"
+            )
+            
+            if manual_questions.strip():
+                questions_list = [q.strip() for q in manual_questions.split('\n') if q.strip()]
+                survey_data = pd.DataFrame({
+                    'heading_0': questions_list,
+                    'position': range(1, len(questions_list) + 1),
+                    'is_choice': [False] * len(questions_list),
+                    'survey_title': 'Manual Entry Survey'
+                })
+                st.session_state.survey_data = survey_data
+                st.success(f"✅ Created {len(survey_data)} questions")
+        
+        # Display current survey data
+        if 'survey_data' in st.session_state and not st.session_state.survey_data.empty:
+            st.markdown("### 📋 Current Survey Data")
+            st.dataframe(st.session_state.survey_data)
+    
+    with tab2:
+        st.markdown("### 🔧 Enhanced UID Assignment")
+        
+        if 'survey_data' not in st.session_state or st.session_state.survey_data.empty:
+            st.warning("⚠️ Please load survey data first in the Survey Data tab.")
+        else:
+            survey_data = st.session_state.survey_data.copy()
+            
+            # Assignment options
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                semantic_matching = st.checkbox("🧠 Enable Semantic Matching", value=True)
+                standardize_questions = st.checkbox("📝 Standardize Question Format", value=True)
+            
+            with col2:
+                enforce_governance = st.checkbox("⚖️ Enforce Governance Rules", value=True)
+                show_quality_scores = st.checkbox("🎯 Show Quality Scores", value=True)
+            
+            # Advanced options
+            with st.expander("🔧 Advanced Settings"):
+                semantic_threshold = st.slider(
+                    "Semantic Similarity Threshold",
+                    min_value=0.5,
+                    max_value=0.95,
+                    value=UID_GOVERNANCE['semantic_similarity_threshold'],
+                    step=0.05
+                )
+                
+                quality_threshold = st.slider(
+                    "Minimum Quality Score",
+                    min_value=0.0,
+                    max_value=20.0,
+                    value=UID_GOVERNANCE['quality_score_threshold'],
+                    step=0.5
+                )
+                
+                batch_processing = st.checkbox("⚡ Enable Batch Processing", value=True)
+            
+            if st.button("🚀 Start Enhanced UID Assignment", type="primary"):
+                with st.spinner("🔄 Processing questions with semantic matching..."):
+                    results = []
+                    progress_bar = st.progress(0)
+                    
+                    questions_to_process = survey_data[survey_data['heading_0'].notna()]['heading_0'].tolist()
+                    
+                    for idx, question in enumerate(questions_to_process):
+                        # Update progress
+                        progress = (idx + 1) / len(questions_to_process)
+                        progress_bar.progress(progress)
+                        
+                        # Apply standardization if enabled
+                        original_question = question
+                        if standardize_questions:
+                            question = standardize_question_format(question)
+                        
+                        # Assign UID with semantic matching and governance
+                        if semantic_matching and existing_uids_data:
+                            # Update threshold
+                            UID_GOVERNANCE['semantic_similarity_threshold'] = semantic_threshold
+                            UID_GOVERNANCE['quality_score_threshold'] = quality_threshold
+                            
+                            assignment_result = assign_uid_with_semantic_governance(
+                                question, existing_uids_data
+                            )
+                        else:
+                            # Simple new UID assignment
+                            new_uid = get_next_available_uid(existing_uids_data)
+                            assignment_result = {
+                                'assigned_uid': new_uid,
+                                'method': 'sequential_assignment',
+                                'confidence': 1.0,
+                                'governance_compliant': True,
+                                'standardized_question': question,
+                                'quality_score': calculate_question_quality_score(question),
+                                'match_details': {},
+                                'governance_check': {'compliant': True, 'message': 'New UID'},
+                                'recommendations': [f'Assigned sequential UID {new_uid}']
+                            }
+                            # Update existing_uids_data for next iteration
+                            existing_uids_data[new_uid] = {
+                                'best_question': question,
+                                'variation_count': 1,
+                                'quality_score': assignment_result['quality_score']
+                            }
+                        
+                        # Store result
+                        result_entry = {
+                            'original_question': original_question,
+                            'standardized_question': assignment_result['standardized_question'],
+                            'assigned_uid': assignment_result['assigned_uid'],
+                            'assignment_method': assignment_result['method'],
+                            'confidence': assignment_result['confidence'],
+                            'quality_score': assignment_result['quality_score'],
+                            'governance_compliant': assignment_result['governance_compliant'],
+                            'recommendations': '; '.join(assignment_result['recommendations'])
+                        }
+                        
+                        # Add match details if available
+                        if assignment_result['match_details']:
+                            result_entry['matched_question'] = assignment_result['match_details'].get('original_matched_question', '')
+                            result_entry['similarity_score'] = assignment_result['match_details'].get('similarity_score', 0)
+                        
+                        results.append(result_entry)
+                    
+                    # Store results
+                    st.session_state.assignment_results = pd.DataFrame(results)
+                    progress_bar.progress(1.0)
+                    
+                    st.success(f"✅ Completed UID assignment for {len(results)} questions!")
+                    
+                    # Summary statistics
+                    results_df = st.session_state.assignment_results
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        semantic_matches = len(results_df[results_df['assignment_method'] == 'semantic_match'])
+                        st.metric("🧠 Semantic Matches", semantic_matches)
+                    
+                    with col2:
+                        new_assignments = len(results_df[results_df['assignment_method'] == 'new_assignment'])
+                        st.metric("🆕 New UIDs", new_assignments)
+                    
+                    with col3:
+                        avg_quality = results_df['quality_score'].mean()
+                        st.metric("🎯 Avg Quality", f"{avg_quality:.1f}")
+                    
+                    with col4:
+                        high_confidence = len(results_df[results_df['confidence'] >= 0.8])
+                        st.metric("⭐ High Confidence", high_confidence)
+    
+    with tab3:
+        st.markdown("### ⚖️ Governance Compliance Check")
+        
+        if 'assignment_results' not in st.session_state:
+            st.info("ℹ️ Complete UID assignment first to see governance analysis.")
+        else:
+            results_df = st.session_state.assignment_results
+            
+            # Run governance analysis
+            governance_analysis = {
+                'total_questions': len(results_df),
+                'compliant_assignments': len(results_df[results_df['governance_compliant'] == True]),
+                'quality_violations': len(results_df[results_df['quality_score'] < UID_GOVERNANCE['quality_score_threshold']]),
+                'low_confidence_matches': len(results_df[results_df['confidence'] < 0.7])
+            }
+            
+            # Display governance metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                compliance_rate = (governance_analysis['compliant_assignments'] / governance_analysis['total_questions']) * 100
+                st.metric("⚖️ Compliance Rate", f"{compliance_rate:.1f}%")
+            
+            with col2:
+                st.metric("❌ Quality Violations", governance_analysis['quality_violations'])
+            
+            with col3:
+                st.metric("⚠️ Low Confidence", governance_analysis['low_confidence_matches'])
+            
+            with col4:
+                unique_uids = results_df['assigned_uid'].nunique()
+                st.metric("🆔 Unique UIDs Created", unique_uids)
+            
+            # Detailed compliance analysis
+            st.markdown("#### 📊 Detailed Compliance Analysis")
+            
+            # Quality score distribution
+            st.markdown("**Quality Score Distribution:**")
+            quality_bins = pd.cut(results_df['quality_score'], bins=[0, 5, 10, 15, 20, float('inf')], labels=['Very Low (0-5)', 'Low (5-10)', 'Medium (10-15)', 'High (15-20)', 'Very High (20+)'])
+            quality_dist = quality_bins.value_counts()
+            st.bar_chart(quality_dist)
+            
+            # Assignment method breakdown
+            st.markdown("**Assignment Methods:**")
+            method_counts = results_df['assignment_method'].value_counts()
+            st.bar_chart(method_counts)
+            
+            # Governance violations details
+            quality_violations = results_df[results_df['quality_score'] < UID_GOVERNANCE['quality_score_threshold']]
+            if not quality_violations.empty:
+                st.markdown("**Quality Violations:**")
+                st.dataframe(
+                    quality_violations[['original_question', 'quality_score', 'recommendations']],
+                    use_container_width=True
+                )
+            
+            # Run conflict detection if reference data available
+            if not df_reference.empty:
+                with st.expander("🔍 Advanced Conflict Detection"):
+                    if st.button("🔄 Run Conflict Detection"):
+                        with st.spinner("Analyzing conflicts..."):
+                            conflicts = detect_uid_conflicts_advanced(df_reference)
+                            
+                            if conflicts:
+                                st.warning(f"⚠️ Found {len(conflicts)} UIDs with conflicts")
+                                
+                                for conflict in conflicts[:10]:  # Show first 10
+                                    with st.expander(f"UID {conflict['uid']} - {len(conflict['conflicts'])} conflicts"):
+                                        st.write(f"**Total Variations:** {conflict['total_variations']}")
+                                        
+                                        for conflict_detail in conflict['conflicts']:
+                                            if conflict_detail['type'] == 'excessive_variations':
+                                                st.error(f"❌ Excessive variations: {conflict_detail['count']} (max: {conflict_detail['threshold']})")
+                                            elif conflict_detail['type'] == 'semantic_inconsistency':
+                                                st.warning("⚠️ Semantic inconsistencies detected")
+                                                for pair in conflict_detail['dissimilar_pairs'][:3]:
+                                                    st.write(f"  • Similarity {pair['similarity']:.2f}: '{pair['question1']}' vs '{pair['question2']}'")
+                                            elif conflict_detail['type'] == 'low_quality':
+                                                st.info(f"ℹ️ Low quality: avg score {conflict_detail['average_score']:.1f}")
+                            else:
+                                st.success("✅ No conflicts detected in reference data")
+    
+    with tab4:
+        st.markdown("### 📋 Assignment Results")
+        
+        if 'assignment_results' not in st.session_state:
+            st.info("ℹ️ Complete UID assignment to see results.")
+        else:
+            results_df = st.session_state.assignment_results
+            
+            # Filter options
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                method_filter = st.selectbox(
+                    "Filter by Method:",
+                    ["All"] + list(results_df['assignment_method'].unique())
+                )
+            
+            with col2:
+                min_quality = st.slider(
+                    "Minimum Quality Score:",
+                    min_value=0.0,
+                    max_value=results_df['quality_score'].max(),
+                    value=0.0
+                )
+            
+            with col3:
+                show_recommendations = st.checkbox("Show Recommendations", value=True)
+            
+            # Apply filters
+            filtered_results = results_df.copy()
+            
+            if method_filter != "All":
+                filtered_results = filtered_results[filtered_results['assignment_method'] == method_filter]
+            
+            filtered_results = filtered_results[filtered_results['quality_score'] >= min_quality]
+            
+            # Display results
+            st.markdown(f"#### 📊 Showing {len(filtered_results)} of {len(results_df)} results")
+            
+            display_columns = ['original_question', 'assigned_uid', 'assignment_method', 'confidence', 'quality_score']
+            
+            if 'matched_question' in filtered_results.columns:
+                display_columns.append('matched_question')
+                display_columns.append('similarity_score')
+            
+            if show_recommendations:
+                display_columns.append('recommendations')
+            
+            # Prepare display dataframe
+            display_df = filtered_results[display_columns].copy()
+            
+            # Rename columns for better display
+            column_renames = {
+                'original_question': 'Question',
+                'assigned_uid': 'UID',
+                'assignment_method': 'Method',
+                'confidence': 'Confidence',
+                'quality_score': 'Quality',
+                'matched_question': 'Matched Question',
+                'similarity_score': 'Similarity',
+                'recommendations': 'Recommendations'
+            }
+            
+            display_df = display_df.rename(columns=column_renames)
+            
+            # Configure column display
+            column_config = {
+                "Question": st.column_config.TextColumn("Question", width="large"),
+                "UID": st.column_config.TextColumn("UID", width="small"),
+                "Method": st.column_config.TextColumn("Method", width="medium"),
+                "Confidence": st.column_config.NumberColumn("Confidence", format="%.3f", width="small"),
+                "Quality": st.column_config.NumberColumn("Quality", format="%.1f", width="small"),
+                "Similarity": st.column_config.NumberColumn("Similarity", format="%.3f", width="small"),
+                "Recommendations": st.column_config.TextColumn("Recommendations", width="large")
+            }
+            
+            st.dataframe(
+                display_df,
+                column_config=column_config,
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            # Export options
+            st.markdown("---")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.download_button(
+                    "📥 Download Results (CSV)",
+                    results_df.to_csv(index=False),
+                    f"uid_assignment_results_{uuid4()}.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # Create summary report
+                summary_report = {
+                    'assignment_date': datetime.now().isoformat(),
+                    'total_questions': len(results_df),
+                    'semantic_matches': len(results_df[results_df['assignment_method'] == 'semantic_match']),
+                    'new_uids': len(results_df[results_df['assignment_method'] == 'new_assignment']),
+                    'average_quality': results_df['quality_score'].mean(),
+                    'governance_compliance_rate': (len(results_df[results_df['governance_compliant'] == True]) / len(results_df)) * 100
+                }
+                
+                st.download_button(
+                    "📊 Download Summary Report",
+                    json.dumps(summary_report, indent=2),
+                    f"assignment_summary_{uuid4()}.json",
+                    "application/json",
+                    use_container_width=True
+                )
+            
+            with col3:
+                # Create UID mapping file for integration
+                uid_mapping = results_df[['original_question', 'assigned_uid', 'standardized_question']].copy()
+                uid_mapping = uid_mapping.rename(columns={
+                    'original_question': 'original_text',
+                    'assigned_uid': 'uid',
+                    'standardized_question': 'standardized_text'
+                })
+                
+                st.download_button(
+                    "🔗 Download UID Mapping",
+                    uid_mapping.to_csv(index=False),
+                    f"uid_mapping_{uuid4()}.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
 
-# Enhanced survey categorization that works without SURVEY_TITLE
-def categorize_survey_from_question(question_text):
-    """
-    Fallback categorization based on question content when SURVEY_TITLE is not available
-    """
-    if not question_text or pd.isna(question_text):
-        return "Unknown"
-    
-    text_lower = str(question_text).lower()
-    
-    # Check for category indicators in question text
-    category_indicators = {
-        'Application': ['apply', 'application', 'register', 'signup', 'join'],
-        'Pre programme': ['before', 'pre-', 'baseline', 'preparation', 'ready'],
-        'Enrollment': ['welcome', 'start', 'begin', 'onboard', 'enroll'],
-        'Progress Review': ['progress', 'review', 'milestone', 'check', 'assessment'],
-        'Impact': ['impact', 'outcome', 'result', 'after', 'completion', 'effect'],
-        'GROW': ['GROW', 'goal', 'reality', 'options', 'will'],
-        'Feedback': ['feedback', 'satisfaction', 'rating', 'opinion', 'evaluate'],
-        'Pulse': ['pulse', 'quick', 'brief', 'temperature', 'snapshot']
-    }
-    
-    for category, keywords in category_indicators.items():
-        if any(keyword.lower() in text_lower for keyword in keywords):
-            return category
-    
-    return "Other"
+# ========================
+# UPDATED: Main Application Logic
+# ========================
 
-@st.cache_data
-def get_all_reference_questions():
-    """Cached function to get all reference questions"""
-    return run_snowflake_reference_query_all()
-
-# SurveyMonkey API functions
+# Update the existing functions to include the enhanced configure survey page
 def get_surveys(token):
     url = "https://api.surveymonkey.com/v3/surveys"
     headers = {"Authorization": f"Bearer {token}"}
@@ -1204,34 +1156,6 @@ def get_survey_details(survey_id, token):
         logger.error(f"Failed to fetch survey details for ID {survey_id}: {e}")
         raise
 
-def classify_question(text, heading_references=HEADING_REFERENCES):
-    # Length-based heuristic
-    if len(text.split()) > HEADING_LENGTH_THRESHOLD:
-        return "Heading"
-    
-    # TF-IDF similarity
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-    all_texts = heading_references + [text]
-    tfidf_vectors = vectorizer.fit_transform([enhanced_normalize(t) for t in all_texts])
-    similarity_scores = cosine_similarity(tfidf_vectors[-1], tfidf_vectors[:-1])
-    max_tfidf_score = np.max(similarity_scores)
-    
-    # Semantic similarity
-    try:
-        model = load_sentence_transformer()
-        emb_text = model.encode([text], convert_to_tensor=True)
-        emb_refs = model.encode(heading_references, convert_to_tensor=True)
-        semantic_scores = util.cos_sim(emb_text, emb_refs)[0]
-        max_semantic_score = np.max(semantic_scores.cpu().numpy())
-    except Exception as e:
-        logger.error(f"Semantic similarity computation failed: {e}")
-        max_semantic_score = 0.0
-    
-    # Combine criteria
-    if max_tfidf_score >= HEADING_TFIDF_THRESHOLD or max_semantic_score >= HEADING_SEMANTIC_THRESHOLD:
-        return "Heading"
-    return "Main Question/Multiple Choice"
-
 def extract_questions(survey_json):
     questions = []
     global_position = 0
@@ -1241,6 +1165,7 @@ def extract_questions(survey_json):
             q_id = question.get("id", None)
             family = question.get("family", None)
             subtype = question.get("subtype", None)
+            
             if family == "single_choice":
                 schema_type = "Single Choice"
             elif family == "multiple_choice":
@@ -1272,6 +1197,7 @@ def extract_questions(survey_json):
                     "survey_title": survey_json.get("title", ""),
                     "question_category": question_category
                 })
+                
                 choices = question.get("answers", {}).get("choices", [])
                 for choice in choices:
                     choice_text = choice.get("text", "")
@@ -1291,156 +1217,340 @@ def extract_questions(survey_json):
                         })
     return questions
 
+def classify_question(text, heading_references=HEADING_REFERENCES):
+    if len(text.split()) > HEADING_LENGTH_THRESHOLD:
+        return "Heading"
+    
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+    all_texts = heading_references + [text]
+    tfidf_vectors = vectorizer.fit_transform([enhanced_normalize(t) for t in all_texts])
+    similarity_scores = cosine_similarity(tfidf_vectors[-1], tfidf_vectors[:-1])
+    max_tfidf_score = np.max(similarity_scores)
+    
+    try:
+        model = load_sentence_transformer()
+        emb_text = model.encode([text], convert_to_tensor=True)
+        emb_refs = model.encode(heading_references, convert_to_tensor=True)
+        semantic_scores = util.cos_sim(emb_text, emb_refs)[0]
+        max_semantic_score = np.max(semantic_scores.cpu().numpy())
+    except Exception as e:
+        logger.error(f"Semantic similarity computation failed: {e}")
+        max_semantic_score = 0.0
+    
+    if max_tfidf_score >= HEADING_TFIDF_THRESHOLD or max_semantic_score >= HEADING_SEMANTIC_THRESHOLD:
+        return "Heading"
+    return "Main Question/Multiple Choice"
+
+def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
+    text = str(text).lower()
+    text = re.sub(r'\(.*?\)', '', text)
+    text = re.sub(r'[^a-z0-9 ]', '', text)
+    
+    for phrase, replacement in synonym_map.items():
+        text = text.replace(phrase, replacement)
+    
+    return ' '.join(w for w in text.split() if w not in ENGLISH_STOP_WORDS)
+
+# Snowflake connection functions (keeping existing ones)
+@st.cache_resource
+def get_snowflake_engine():
+    try:
+        sf = st.secrets["snowflake"]
+        logger.info(f"Attempting Snowflake connection: user={sf.user}, account={sf.account}")
+        engine = create_engine(
+            f"snowflake://{sf.user}:{sf.password}@{sf.account}/{sf.database}/{sf.schema}"
+            f"?warehouse={sf.warehouse}&role={sf.role}"
+        )
+        with engine.connect() as conn:
+            conn.execute(text("SELECT CURRENT_VERSION()"))
+        return engine
+    except Exception as e:
+        logger.error(f"Snowflake engine creation failed: {e}")
+        if "250001" in str(e):
+            st.warning(
+                "🔒 Snowflake connection failed: User account is locked. "
+                "UID matching is disabled, but you can edit questions, search, and use Google Forms."
+            )
+        raise
+
+@st.cache_data
+def get_all_reference_questions():
+    """Cached function to get all reference questions"""
+    return run_snowflake_reference_query_all()
+
+def run_snowflake_reference_query_all():
+    """Fetch ALL reference questions from Snowflake with pagination"""
+    all_data = []
+    limit = 10000
+    offset = 0
+    
+    while True:
+        query = """
+            SELECT HEADING_0, UID, SURVEY_TITLE
+            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+            WHERE UID IS NOT NULL
+            ORDER BY CAST(UID AS INTEGER) ASC
+            LIMIT :limit OFFSET :offset
+        """
+        try:
+            with get_snowflake_engine().connect() as conn:
+                result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
+            
+            if result.empty:
+                break
+                
+            all_data.append(result)
+            offset += limit
+            
+            logger.info(f"Fetched {len(result)} rows, total so far: {sum(len(df) for df in all_data)}")
+            
+            if len(result) < limit:
+                break
+                
+        except Exception as e:
+            logger.error(f"Snowflake reference query failed at offset {offset}: {e}")
+            raise
+    
+    if all_data:
+        final_df = pd.concat(all_data, ignore_index=True)
+        logger.info(f"Total reference questions fetched: {len(final_df)}")
+        return final_df
+    else:
+        logger.warning("No reference data fetched")
+        return pd.DataFrame()
+
 # Initialize session state
 if "page" not in st.session_state:
     st.session_state.page = "home"
-if "df_enhanced" not in st.session_state:
-    st.session_state.df_enhanced = None
-if "survey_category" not in st.session_state:
-    st.session_state.survey_category = None
+if "df_target" not in st.session_state:
+    st.session_state.df_target = None
+if "df_final" not in st.session_state:
+    st.session_state.df_final = None
+if "uid_changes" not in st.session_state:
+    st.session_state.uid_changes = {}
+if "custom_questions" not in st.session_state:
+    st.session_state.custom_questions = pd.DataFrame(columns=["Customized Question", "Original Question", "Final_UID"])
+if "df_reference" not in st.session_state:
+    st.session_state.df_reference = None
+if "survey_template" not in st.session_state:
+    st.session_state.survey_template = None
 
 # Enhanced Sidebar Navigation
 with st.sidebar:
-    st.markdown("### 🧠 UID Matcher Pro Enhanced")
-    st.markdown("Advanced semantic matching & governance")
+    st.markdown("### 🧠 UID Matcher Pro")
+    st.markdown("Enhanced with Semantic Matching & Governance")
     
-    # Main navigation
     if st.button("🏠 Home Dashboard", use_container_width=True):
         st.session_state.page = "home"
         st.rerun()
     
     st.markdown("---")
-    
-    # Enhanced SurveyMonkey section
-    st.markdown("**📊 Enhanced SurveyMonkey**")
-    if st.button("⚙️ Enhanced Configure Survey", use_container_width=True):
-        st.session_state.page = "enhanced_configure_survey"
-        st.rerun()
+    st.markdown("**📊 SurveyMonkey**")
     if st.button("👁️ View Surveys", use_container_width=True):
         st.session_state.page = "view_surveys"
         st.rerun()
-    
-    st.markdown("---")
-    
-    # Enhanced Question Bank section
-    st.markdown("**📚 Enhanced Question Bank**")
-    if st.button("⭐ Enhanced Unique Bank", use_container_width=True):
-        st.session_state.page = "enhanced_unique_bank"
-        st.rerun()
-    if st.button("📊 Category Analysis", use_container_width=True):
-        st.session_state.page = "category_analysis"
-        st.rerun()
-    if st.button("🔍 Conflict Detection", use_container_width=True):
-        st.session_state.page = "conflict_detection"
-        st.rerun()
-    if st.button("📈 Quality Dashboard", use_container_width=True):
-        st.session_state.page = "quality_dashboard"
+    if st.button("⚙️ Enhanced Configure Survey", use_container_width=True):
+        st.session_state.page = "configure_survey"
         st.rerun()
     
     st.markdown("---")
-    
-    # Enhanced Governance section
-    st.markdown("**⚖️ Enhanced Governance**")
+    st.markdown("**⚖️ Governance Status**")
     st.markdown(f"• Max variations: {UID_GOVERNANCE['max_variations_per_uid']}")
     st.markdown(f"• Semantic threshold: {UID_GOVERNANCE['semantic_similarity_threshold']}")
     st.markdown(f"• Quality threshold: {UID_GOVERNANCE['quality_score_threshold']}")
-    st.markdown(f"• Semantic matching: {'✅' if UID_GOVERNANCE['semantic_matching_enabled'] else '❌'}")
+    if UID_GOVERNANCE['conflict_detection_enabled']:
+        st.markdown("• ✅ Conflict detection: ON")
+    else:
+        st.markdown("• ❌ Conflict detection: OFF")
 
-# App UI with enhanced styling
-st.markdown('<div class="main-header">🧠 Enhanced UID Matcher Pro: Semantic AI + Governance</div>', unsafe_allow_html=True)
+# Main Application
+st.markdown('<div class="main-header">🧠 UID Matcher Pro: Enhanced with Semantic Matching & Governance</div>', unsafe_allow_html=True)
 
-# Secrets Validation
+# Secrets validation
 if "snowflake" not in st.secrets or "surveymonkey" not in st.secrets:
     st.markdown('<div class="warning-card">⚠️ Missing secrets configuration for Snowflake or SurveyMonkey.</div>', unsafe_allow_html=True)
     st.stop()
 
-# Enhanced unique questions bank with fallback categorization
-def create_enhanced_unique_questions_bank(df_reference):
-    """
-    Enhanced unique questions bank with survey categorization and governance compliance
-    Now includes fallback categorization when SURVEY_TITLE is not available
-    """
+# Page routing
+if st.session_state.page == "home":
+    st.markdown("## 🏠 Welcome to Enhanced UID Matcher Pro")
+    st.markdown("*Now with AI-powered semantic matching, governance rules, and quality assurance*")
+    
+    # Enhanced features showcase
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 🚀 New Enhanced Features")
+        st.markdown("✅ **Semantic Matching**: AI understands question meaning")
+        st.markdown("✅ **Governance Rules**: Automatic compliance checking")
+        st.markdown("✅ **Quality Scoring**: Smart question assessment")
+        st.markdown("✅ **Conflict Detection**: Real-time duplicate identification")
+        st.markdown("✅ **Question Standardization**: Consistent formatting")
+        
+    with col2:
+        st.markdown("### 📊 System Status")
+        try:
+            get_snowflake_engine()
+            st.markdown("✅ **Snowflake**: Connected")
+        except:
+            st.markdown("❌ **Snowflake**: Connection Issues")
+        
+        try:
+            token = st.secrets.get("surveymonkey", {}).get("token", None)
+            if token:
+                st.markdown("✅ **SurveyMonkey**: Connected")
+            else:
+                st.markdown("❌ **SurveyMonkey**: No Token")
+        except:
+            st.markdown("❌ **SurveyMonkey**: API Issues")
+        
+        st.markdown("✅ **Governance**: Active")
+        st.markdown("✅ **Semantic Matching**: Ready")
+    
+    st.markdown("---")
+    
+    # Quick start guide
+    st.markdown("## 🚀 Quick Start")
+    st.markdown("1. **Configure Survey** - Use enhanced UID assignment with semantic matching")
+    st.markdown("2. **Review Governance** - Check compliance and quality scores")
+    st.markdown("3. **Analyze Results** - View detailed assignment analytics")
+    
+    if st.button("🚀 Start Enhanced Survey Configuration", type="primary", use_container_width=True):
+        st.session_state.page = "configure_survey"
+        st.rerun()
+
+elif st.session_state.page == "configure_survey":
+    enhanced_configure_survey_page()
+
+elif st.session_state.page == "view_surveys":
+    st.markdown("## 👁️ View SurveyMonkey Surveys")
+    
+    token = st.text_input("🔑 SurveyMonkey API Token", 
+                        type="password", 
+                        value=st.secrets.get("surveymonkey", {}).get("token", ""))
+    
+    if token:
+        try:
+            surveys = get_surveys(token)
+            if surveys:
+                st.success(f"✅ Found {len(surveys)} surveys")
+                
+                surveys_df = pd.DataFrame(surveys)
+                st.dataframe(surveys_df, use_container_width=True)
+                
+                # Survey selection for detailed view
+                selected_survey = st.selectbox(
+                    "Select survey for details:",
+                    [f"{s['id']} - {s['title']}" for s in surveys]
+                )
+                
+                if selected_survey:
+                    survey_id = selected_survey.split(" - ")[0]
+                    
+                    if st.button("📋 View Survey Details"):
+                        with st.spinner("Loading survey details..."):
+                            survey_details = get_survey_details(survey_id, token)
+                            questions = extract_questions(survey_details)
+                            
+                            st.markdown(f"### Survey: {survey_details.get('title', 'Unknown')}")
+                            st.markdown(f"**ID:** {survey_details.get('id', 'Unknown')}")
+                            st.markdown(f"**Questions:** {len(questions)}")
+                            
+                            if questions:
+                                questions_df = pd.DataFrame(questions)
+                                st.dataframe(questions_df, use_container_width=True)
+            else:
+                st.info("No surveys found")
+        except Exception as e:
+            st.error(f"❌ Error fetching surveys: {e}")
+
+# Additional helper functions for the complete application
+
+def categorize_survey(survey_title):
+    """Categorize survey based on title keywords with priority ordering"""
+    if not survey_title:
+        return "Unknown"
+    
+    title_lower = survey_title.lower()
+    
+    # Check GROW first (exact match for CAPS)
+    if 'GROW' in survey_title:
+        return 'GROW'
+    
+    # Check other categories
+    for category, keywords in SURVEY_CATEGORIES.items():
+        if category == 'GROW':  # Already checked
+            continue
+        for keyword in keywords:
+            if keyword.lower() in title_lower:
+                return category
+    
+    return "Other"
+
+def create_unique_questions_bank(df_reference):
+    """Enhanced unique questions bank with survey categorization and governance"""
     if df_reference.empty:
         return pd.DataFrame()
     
-    logger.info(f"Processing {len(df_reference)} reference questions for enhanced unique bank")
+    logger.info(f"Processing {len(df_reference)} reference questions for unique bank")
     
     unique_questions = []
     uid_groups = df_reference.groupby('uid')
+    logger.info(f"Found {len(uid_groups)} unique UIDs")
     
     for uid, group in uid_groups:
         if pd.isna(uid):
             continue
             
         uid_questions = group['heading_0'].tolist()
-        best_question = get_best_question_for_uid(uid_questions)
         
-        # Enhanced survey categorization with fallback
-        survey_titles = []
-        if 'SURVEY_TITLE' in group.columns:
-            survey_titles = group['SURVEY_TITLE'].dropna().unique()
+        # Calculate quality scores for all questions
+        quality_scores = [calculate_question_quality_score(q) for q in uid_questions]
+        best_idx = np.argmax(quality_scores)
+        best_question = uid_questions[best_idx]
+        best_quality = quality_scores[best_idx]
         
-        # Determine primary category with confidence scoring
-        category_votes = {}
-        category_confidence = 0.0
+        # Get survey titles for categorization
+        survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
         
-        if len(survey_titles) > 0 and not all(title == 'Unknown Survey' for title in survey_titles):
-            # Use survey titles for categorization
-            for title in survey_titles:
-                category = categorize_survey(title)
-                category_votes[category] = category_votes.get(category, 0) + 1
-            
-            if category_votes:
-                primary_category = max(category_votes, key=category_votes.get)
-                category_confidence = category_votes[primary_category] / len(survey_titles)
-            else:
-                primary_category = "Unknown"
+        # Determine category from survey titles
+        categories = []
+        for title in survey_titles:
+            category = categorize_survey(title)
+            if category not in categories:
+                categories.append(category)
+        
+        # If multiple categories, take the most frequent
+        if categories:
+            primary_category = categories[0] if len(categories) == 1 else "Mixed"
         else:
-            # Fallback: categorize based on question content
-            primary_category = categorize_survey_from_question(best_question)
-            category_confidence = 0.5  # Medium confidence for question-based categorization
-        
-        # Calculate governance compliance
-        governance_compliant = len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid']
-        
-        # Calculate quality metrics
-        quality_scores = [score_question_quality(q) for q in uid_questions]
-        avg_quality = np.mean(quality_scores)
-        quality_std = np.std(quality_scores) if len(quality_scores) > 1 else 0.0
-        
-        # Detect potential issues
-        issues = []
-        if not governance_compliant:
-            issues.append("governance_violation")
-        if avg_quality < UID_GOVERNANCE['quality_score_threshold']:
-            issues.append("low_quality")
-        if quality_std > 5.0:
-            issues.append("quality_inconsistency")
+            primary_category = "Unknown"
         
         if best_question:
+            # Standardize the best question
+            standardized_question = standardize_question_format(best_question)
+            
             unique_questions.append({
                 'uid': uid,
                 'best_question': best_question,
-                'standardized_question': standardize_question_format(best_question),
+                'standardized_question': standardized_question,
                 'total_variants': len(uid_questions),
                 'question_length': len(str(best_question)),
                 'question_words': len(str(best_question).split()),
                 'survey_category': primary_category,
-                'category_confidence': round(category_confidence, 2),
                 'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
-                'quality_score': round(avg_quality, 1),
-                'quality_std': round(quality_std, 1),
-                'governance_compliant': governance_compliant,
-                'issues': ', '.join(issues) if issues else 'none',
-                'created_date': datetime.now().isoformat(),
-                'last_updated': datetime.now().isoformat(),
-                'all_variants': uid_questions
+                'quality_score': best_quality,
+                'governance_compliant': len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid'],
+                'all_variants': uid_questions,
+                'quality_scores': quality_scores,
+                'avg_quality': np.mean(quality_scores),
+                'standardization_applied': best_question != standardized_question
             })
     
     unique_df = pd.DataFrame(unique_questions)
-    logger.info(f"Created enhanced unique questions bank with {len(unique_df)} UIDs")
+    logger.info(f"Created unique questions bank with {len(unique_df)} UIDs")
     
-    # Sort by UID
+    # Sort by UID in ascending order
     if not unique_df.empty:
         try:
             unique_df['uid_numeric'] = pd.to_numeric(unique_df['uid'], errors='coerce')
@@ -1451,924 +1561,147 @@ def create_enhanced_unique_questions_bank(df_reference):
     
     return unique_df
 
-# Add a data source information function
-def display_data_source_info():
-    """Display information about the data source and available columns"""
+def analyze_uid_variations_enhanced(df_reference):
+    """Enhanced analysis with governance compliance and quality metrics"""
+    analysis_results = {}
+    
+    # Basic statistics
+    uid_counts = df_reference['uid'].value_counts().sort_values(ascending=False)
+    
+    analysis_results['total_questions'] = len(df_reference)
+    analysis_results['unique_uids'] = df_reference['uid'].nunique()
+    analysis_results['avg_variations_per_uid'] = len(df_reference) / df_reference['uid'].nunique()
+    
+    # Governance compliance
+    governance_violations = uid_counts[uid_counts > UID_GOVERNANCE['max_variations_per_uid']]
+    analysis_results['governance_compliance'] = {
+        'violations': len(governance_violations),
+        'violation_rate': (len(governance_violations) / len(uid_counts)) * 100,
+        'violating_uids': governance_violations.to_dict()
+    }
+    
+    # Quality analysis
+    if not df_reference.empty:
+        questions = df_reference['heading_0'].dropna()
+        quality_scores = [calculate_question_quality_score(q) for q in questions]
+        
+        analysis_results['quality_metrics'] = {
+            'average_quality': np.mean(quality_scores),
+            'median_quality': np.median(quality_scores),
+            'std_quality': np.std(quality_scores),
+            'below_threshold_count': sum(1 for score in quality_scores if score < UID_GOVERNANCE['quality_score_threshold']),
+            'below_threshold_percentage': (sum(1 for score in quality_scores if score < UID_GOVERNANCE['quality_score_threshold']) / len(quality_scores)) * 100
+        }
+    
+    # Standardization analysis
+    standardized_questions = [standardize_question_format(q) for q in df_reference['heading_0'].dropna()]
+    original_questions = df_reference['heading_0'].dropna().tolist()
+    
+    standardization_changes = sum(1 for orig, std in zip(original_questions, standardized_questions) if orig != std)
+    analysis_results['standardization_metrics'] = {
+        'total_questions_analyzed': len(original_questions),
+        'questions_needing_standardization': standardization_changes,
+        'standardization_rate': (standardization_changes / len(original_questions)) * 100 if original_questions else 0
+    }
+    
+    return analysis_results
+
+# Error handling and logging utilities
+def log_governance_violation(uid, violation_type, details):
+    """Log governance violations for audit trail"""
+    violation_entry = {
+        'timestamp': datetime.now().isoformat(),
+        'uid': uid,
+        'violation_type': violation_type,
+        'details': details,
+        'action_taken': UID_GOVERNANCE.get('governance_violation_action', 'warn_and_log')
+    }
+    
+    logger.warning(f"Governance violation detected: {violation_entry}")
+    return violation_entry
+
+def validate_semantic_matching_setup():
+    """Validate that semantic matching is properly configured"""
     try:
-        schema_df = check_snowflake_table_schema()
-        
-        if not schema_df.empty:
-            st.markdown("### 📋 Snowflake Table Schema")
-            st.dataframe(schema_df, use_container_width=True)
-            
-            # Check for important columns
-            available_columns = schema_df['COLUMN_NAME'].tolist()
-            important_columns = ['HEADING_0', 'UID', 'SURVEY_TITLE', 'SURVEY_ID']
-            
-            st.markdown("### ✅ Column Availability")
-            for col in important_columns:
-                if col in available_columns:
-                    st.success(f"✅ {col} - Available")
-                else:
-                    st.warning(f"⚠️ {col} - Not Available")
-            
-            if 'SURVEY_TITLE' not in available_columns:
-                st.info(
-                    "💡 **Note**: SURVEY_TITLE column is not available in Snowflake. "
-                    "The system will use question content analysis for categorization with reduced accuracy."
-                )
-        else:
-            st.warning("⚠️ Could not retrieve table schema information")
-            
+        model = load_sentence_transformer()
+        test_texts = ["What is your name?", "How old are you?"]
+        embeddings = model.encode(test_texts)
+        logger.info("Semantic matching validation successful")
+        return True, "Semantic matching ready"
     except Exception as e:
-        st.error(f"❌ Error checking data source: {e}")
+        logger.error(f"Semantic matching validation failed: {e}")
+        return False, f"Semantic matching error: {e}"
 
-# Enhanced home page with data source info
-def enhanced_home_page():
-    """Enhanced home page with data source validation"""
-    st.markdown("## 🏠 Enhanced UID Matcher Pro Dashboard")
-    st.markdown("*Advanced semantic matching with AI governance and categorization*")
+# Monthly quality check scheduler (simplified for demo)
+def schedule_monthly_quality_check():
+    """Schedule monthly quality checks (would integrate with actual scheduler in production)"""
+    if not UID_GOVERNANCE['monthly_quality_check']:
+        return None
     
-    # Data source validation
-    with st.expander("📊 Data Source Information", expanded=False):
-        display_data_source_info()
-    
-    # Enhanced dashboard metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("🧠 AI Status", "Semantic Ready")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        try:
-            with get_snowflake_engine().connect() as conn:
-                result = conn.execute(text("SELECT COUNT(DISTINCT UID) FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE WHERE UID IS NOT NULL"))
-                count = result.fetchone()[0]
-                st.metric("🆔 Unique UIDs", f"{count:,}")
-        except:
-            st.metric("🆔 Unique UIDs", "Connection Error")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("⚖️ Governance", "Active")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col4:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("📊 Categories", len(SURVEY_CATEGORIES))
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Rest of the home page content...
-    st.markdown("---")
-    
-    # Enhanced features showcase
-    st.markdown("## 🚀 Enhanced AI Features")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### 🧠 Advanced Semantic Matching")
-        st.markdown("• **AI-Powered Similarity**: Using sentence transformers for deep understanding")
-        st.markdown("• **Standardized Formatting**: Auto-format questions before matching")
-        st.markdown("• **Confidence Scoring**: Transparent matching confidence levels")
-        st.markdown("• **Governance Integration**: Real-time compliance checking")
-        
-        if st.button("⚙️ Try Enhanced Configure Survey", use_container_width=True):
-            st.session_state.page = "enhanced_configure_survey"
-            st.rerun()
-    
-    with col2:
-        st.markdown("### 📊 Smart Categorization")
-        st.markdown("• **Auto-Detection**: Smart survey category identification")
-        st.markdown("• **8 Categories**: Application, Pre programme, Enrollment, Progress Review, Impact, GROW, Feedback, Pulse")
-        st.markdown("• **Fallback Analysis**: Question content analysis when survey titles unavailable")
-        st.markdown("• **Governance by Category**: Category-specific compliance tracking")
-        
-        if st.button("📊 Explore Category Analysis", use_container_width=True):
-            st.session_state.page = "category_analysis"
-            st.rerun()
-    
-    # Quick actions with enhanced features
-    st.markdown("---")
-    st.markdown("## 🎯 Enhanced Quick Actions")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("🔍 Run Conflict Detection", use_container_width=True):
-            st.session_state.page = "conflict_detection"
-            st.rerun()
-    
-    with col2:
-        if st.button("📈 Quality Dashboard", use_container_width=True):
-            st.session_state.page = "quality_dashboard"
-            st.rerun()
-    
-    with col3:
-        if st.button("⭐ Enhanced Question Bank", use_container_width=True):
-            st.session_state.page = "enhanced_unique_bank"
-            st.rerun()
+    # In production, this would integrate with a job scheduler
+    # For demo, we'll just return the configuration
+    return {
+        'enabled': True,
+        'frequency': 'monthly',
+        'next_check': (datetime.now() + timedelta(days=30)).isoformat(),
+        'checks_to_perform': [
+            'governance_compliance',
+            'quality_metrics',
+            'conflict_detection',
+            'standardization_analysis'
+        ]
+    }
 
-# Update the home page handler
-if st.session_state.page == "home":
-    enhanced_home_page()
+# Integration utilities for external systems
+def export_uid_mappings_for_integration(assignment_results):
+    """Export UID mappings in format suitable for external system integration"""
+    if assignment_results.empty:
+        return pd.DataFrame()
+    
+    integration_df = assignment_results[['original_question', 'assigned_uid', 'standardized_question', 'confidence', 'quality_score']].copy()
+    
+    # Add metadata for integration
+    integration_df['export_timestamp'] = datetime.now().isoformat()
+    integration_df['governance_compliant'] = integration_df['quality_score'] >= UID_GOVERNANCE['quality_score_threshold']
+    integration_df['confidence_level'] = integration_df['confidence'].apply(
+        lambda x: 'High' if x >= 0.9 else 'Medium' if x >= 0.7 else 'Low'
+    )
+    
+    # Rename for external system compatibility
+    integration_df = integration_df.rename(columns={
+        'original_question': 'source_question_text',
+        'assigned_uid': 'target_uid',
+        'standardized_question': 'normalized_question_text',
+        'confidence': 'assignment_confidence',
+        'quality_score': 'question_quality_score'
+    })
+    
+    return integration_df
 
-# Enhanced Configure Survey Page
-elif st.session_state.page == "enhanced_configure_survey":
-    enhanced_configure_survey_page()
+# Complete the application with proper error handling
+try:
+    # Validate semantic matching setup on startup
+    semantic_valid, semantic_msg = validate_semantic_matching_setup()
+    if not semantic_valid:
+        st.sidebar.warning(f"⚠️ {semantic_msg}")
+    else:
+        st.sidebar.success("✅ Semantic matching ready")
+    
+    # Add monthly quality check status to sidebar
+    monthly_check_config = schedule_monthly_quality_check()
+    if monthly_check_config:
+        st.sidebar.info("📅 Monthly quality checks enabled")
 
-# Enhanced Unique Question Bank Page
-elif st.session_state.page == "enhanced_unique_bank":
-    st.markdown("## ⭐ Enhanced Unique Questions Bank")
-    st.markdown("*AI-powered question bank with semantic matching and governance compliance*")
-    
-    try:
-        with st.spinner("🧠 Loading enhanced question bank with AI analysis..."):
-            df_reference = get_all_reference_questions()
-            
-            if df_reference.empty:
-                st.markdown('<div class="warning-card">⚠️ No reference data found.</div>', unsafe_allow_html=True)
-            else:
-                enhanced_unique_df = create_enhanced_unique_questions_bank(df_reference)
-        
-        if enhanced_unique_df.empty:
-            st.markdown('<div class="warning-card">⚠️ No enhanced questions found.</div>', unsafe_allow_html=True)
-        else:
-            # Enhanced summary metrics
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                st.metric("🆔 Unique UIDs", len(enhanced_unique_df))
-            with col2:
-                total_variants = enhanced_unique_df['total_variants'].sum()
-                st.metric("📝 Total Variants", f"{total_variants:,}")
-            with col3:
-                governance_compliant = len(enhanced_unique_df[enhanced_unique_df['governance_compliant'] == True])
-                st.metric("⚖️ Compliant", f"{governance_compliant}/{len(enhanced_unique_df)}")
-            with col4:
-                avg_quality = enhanced_unique_df['quality_score'].mean()
-                st.metric("🎯 Avg Quality", f"{avg_quality:.1f}")
-            with col5:
-                categories = enhanced_unique_df['survey_category'].nunique()
-                st.metric("📊 Categories", categories)
-            
-            st.markdown("---")
-            
-            # Enhanced filters
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                search_term = st.text_input("🔍 Search questions", placeholder="Type to filter...")
-            
-            with col2:
-                category_filter = st.selectbox("📊 Category Filter", 
-                    ["All"] + sorted(enhanced_unique_df['survey_category'].unique()))
-            
-            with col3:
-                governance_filter = st.selectbox("⚖️ Governance Filter", 
-                    ["All", "Compliant Only", "Violations Only"])
-            
-            with col4:
-                quality_filter = st.selectbox("🎯 Quality Filter", 
-                    ["All", "High (>10)", "Medium (5-10)", "Low (<5)"])
-            
-            # Apply enhanced filters
-            filtered_df = enhanced_unique_df.copy()
-            
-            if search_term:
-                filtered_df = filtered_df[
-                    filtered_df['best_question'].str.contains(search_term, case=False, na=False) |
-                    filtered_df['standardized_question'].str.contains(search_term, case=False, na=False)
-                ]
-            
-            if category_filter != "All":
-                filtered_df = filtered_df[filtered_df['survey_category'] == category_filter]
-            
-            if governance_filter == "Compliant Only":
-                filtered_df = filtered_df[filtered_df['governance_compliant'] == True]
-            elif governance_filter == "Violations Only":
-                filtered_df = filtered_df[filtered_df['governance_compliant'] == False]
-            
-            if quality_filter == "High (>10)":
-                filtered_df = filtered_df[filtered_df['quality_score'] > 10]
-            elif quality_filter == "Medium (5-10)":
-                filtered_df = filtered_df[(filtered_df['quality_score'] >= 5) & (filtered_df['quality_score'] <= 10)]
-            elif quality_filter == "Low (<5)":
-                filtered_df = filtered_df[filtered_df['quality_score'] < 5]
-            
-            st.markdown(f"### 📋 Enhanced Results ({len(filtered_df)} questions)")
-            
-            if not filtered_df.empty:
-                # Display enhanced results
-                display_df = filtered_df[
-                    ['uid', 'best_question', 'standardized_question', 'survey_category', 
-                     'total_variants', 'quality_score', 'governance_compliant', 'issues']
-                ].copy()
-                
-                display_df['governance_compliant'] = display_df['governance_compliant'].apply(lambda x: "✅" if x else "❌")
-                
-                display_df = display_df.rename(columns={
-                    'uid': 'UID',
-                    'best_question': 'Original Question',
-                    'standardized_question': 'Standardized Format',
-                    'survey_category': 'Category',
-                    'total_variants': 'Variants',
-                    'quality_score': 'Quality',
-                    'governance_compliant': 'Governance',
-                    'issues': 'Issues'
-                })
-                
-                st.dataframe(
-                    display_df,
-                    column_config={
-                        "UID": st.column_config.TextColumn("UID", width="small"),
-                        "Original Question": st.column_config.TextColumn("Original Question", width="large"),
-                        "Standardized Format": st.column_config.TextColumn("Standardized Format", width="large"),
-                        "Category": st.column_config.TextColumn("Category", width="medium"),
-                        "Variants": st.column_config.NumberColumn("Variants", width="small"),
-                        "Quality": st.column_config.NumberColumn("Quality", format="%.1f", width="small"),
-                        "Governance": st.column_config.TextColumn("Governance", width="small"),
-                        "Issues": st.column_config.TextColumn("Issues", width="medium")
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
-                
-                # Enhanced downloads
-                st.markdown("### 📥 Enhanced Downloads")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.download_button(
-                        "📥 Download Enhanced Results",
-                        filtered_df.to_csv(index=False),
-                        f"enhanced_unique_questions_{uuid4()}.csv",
-                        "text/csv",
-                        use_container_width=True
-                    )
-                
-                with col2:
-                    governance_issues = filtered_df[filtered_df['governance_compliant'] == False]
-                    if not governance_issues.empty:
-                        st.download_button(
-                            "⚖️ Download Governance Issues",
-                            governance_issues.to_csv(index=False),
-                            f"governance_violations_{uuid4()}.csv",
-                            "text/csv",
-                            use_container_width=True
-                        )
-                
-                with col3:
-                    # Category breakdown
-                    category_summary = enhanced_unique_df.groupby('survey_category').agg({
-                        'uid': 'count',
-                        'quality_score': 'mean',
-                        'governance_compliant': lambda x: (x == True).sum(),
-                        'total_variants': 'sum'
-                    }).round(2)
-                    
-                    st.download_button(
-                        "📊 Download Category Summary",
-                        category_summary.to_csv(),
-                        f"category_summary_{uuid4()}.csv",
-                        "text/csv",
-                        use_container_width=True
-                    )
-            else:
-                st.markdown('<div class="info-card">ℹ️ No questions match your filters.</div>', unsafe_allow_html=True)
-                
-    except Exception as e:
-        logger.error(f"Enhanced unique bank failed: {e}")
-        st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
+except Exception as e:
+    logger.error(f"Application initialization error: {e}")
+    st.error(f"❌ Application initialization failed: {e}")
 
-# Category Analysis Page
-elif st.session_state.page == "category_analysis":
-    st.markdown("## 📊 Enhanced Category Analysis")
-    st.markdown("*Comprehensive analysis of questions by survey categories with AI insights*")
-    
-    try:
-        with st.spinner("🔄 Loading category analysis..."):
-            df_reference = get_all_reference_questions()
-            enhanced_unique_df = create_enhanced_unique_questions_bank(df_reference)
-        
-        if enhanced_unique_df.empty:
-            st.markdown('<div class="warning-card">⚠️ No data available for analysis.</div>', unsafe_allow_html=True)
-        else:
-            # Category overview with enhanced metrics
-            st.markdown("### 📊 Category Overview")
-            
-            category_stats = enhanced_unique_df.groupby('survey_category').agg({
-                'uid': 'count',
-                'total_variants': ['sum', 'mean'],
-                'quality_score': ['mean', 'std'],
-                'governance_compliant': lambda x: (x == True).sum(),
-                'category_confidence': 'mean'
-            }).round(2)
-            
-            # Flatten column names
-            category_stats.columns = ['Questions', 'Total_Variants', 'Avg_Variants', 'Avg_Quality', 'Quality_Std', 'Governance_Compliant', 'Avg_Confidence']
-            category_stats['Governance_Rate'] = (category_stats['Governance_Compliant'] / category_stats['Questions'] * 100).round(1)
-            category_stats = category_stats.sort_values('Questions', ascending=False)
-            
-            # Display category cards
-            categories = list(category_stats.index)
-            cols = st.columns(min(4, len(categories)))
-            
-            for i, category in enumerate(categories):
-                with cols[i % 4]:
-                    stats = category_stats.loc[category]
-                    
-                    # Determine card color based on governance rate
-                    if stats['Governance_Rate'] >= 90:
-                        card_class = "success-card"
-                    elif stats['Governance_Rate'] >= 70:
-                        card_class = "warning-card"
-                    else:
-                        card_class = "governance-violation"
-                    
-                    st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
-                    st.markdown(f"**📋 {category}**")
-                    st.markdown(f"Questions: {stats['Questions']}")
-                    st.markdown(f"Quality: {stats['Avg_Quality']:.1f}")
-                    st.markdown(f"Governance: {stats['Governance_Rate']:.1f}%")
-                    st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # Detailed category statistics table
-            st.markdown("### 📈 Detailed Category Statistics")
-            
-            display_stats = category_stats.copy()
-            display_stats = display_stats.rename(columns={
-                'Questions': 'Total Questions',
-                'Total_Variants': 'All Variants',
-                'Avg_Variants': 'Avg Variants/UID',
-                'Avg_Quality': 'Avg Quality Score',
-                'Quality_Std': 'Quality Std Dev',
-                'Governance_Compliant': 'Governance Compliant',
-                'Avg_Confidence': 'Avg Category Confidence',
-                'Governance_Rate': 'Governance Rate (%)'
-            })
-            
-            st.dataframe(
-                display_stats,
-                column_config={
-                    "Total Questions": st.column_config.NumberColumn("Total Questions", width="small"),
-                    "All Variants": st.column_config.NumberColumn("All Variants", width="small"),
-                    "Avg Variants/UID": st.column_config.NumberColumn("Avg Variants/UID", format="%.1f", width="small"),
-                    "Avg Quality Score": st.column_config.NumberColumn("Avg Quality Score", format="%.1f", width="small"),
-                    "Quality Std Dev": st.column_config.NumberColumn("Quality Std Dev", format="%.1f", width="small"),
-                    "Governance Compliant": st.column_config.NumberColumn("Governance Compliant", width="small"),
-                    "Avg Category Confidence": st.column_config.NumberColumn("Avg Category Confidence", format="%.2f", width="small"),
-                    "Governance Rate (%)": st.column_config.NumberColumn("Governance Rate (%)", format="%.1f", width="small")
-                },
-                use_container_width=True
-            )
-            
-            st.markdown("---")
-            
-            # Category-specific analysis
-            st.markdown("### 🔍 Category-Specific Analysis")
-            
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                selected_category = st.selectbox(
-                    "📊 Select Category for Deep Analysis",
-                    ["All"] + sorted(enhanced_unique_df['survey_category'].unique())
-                )
-            
-            with col2:
-                analysis_type = st.selectbox(
-                    "🔬 Analysis Type",
-                    ["Overview", "Quality Analysis", "Governance Issues", "Question Samples"]
-                )
-            
-            # Filter data by category
-            if selected_category == "All":
-                analysis_df = enhanced_unique_df.copy()
-            else:
-                analysis_df = enhanced_unique_df[enhanced_unique_df['survey_category'] == selected_category].copy()
-            
-            if analysis_type == "Overview":
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("📊 Questions", len(analysis_df))
-                with col2:
-                    avg_quality = analysis_df['quality_score'].mean()
-                    st.metric("🎯 Avg Quality", f"{avg_quality:.1f}")
-                with col3:
-                    governance_rate = (analysis_df['governance_compliant'] == True).sum() / len(analysis_df) * 100
-                    st.metric("⚖️ Governance Rate", f"{governance_rate:.1f}%")
-                with col4:
-                    total_variants = analysis_df['total_variants'].sum()
-                    st.metric("📝 Total Variants", total_variants)
-                
-                # Show distribution charts would go here if we had plotting libraries
-                st.markdown("**Quality Score Distribution:**")
-                quality_bins = pd.cut(analysis_df['quality_score'], bins=5)
-                quality_dist = quality_bins.value_counts().sort_index()
-                for interval, count in quality_dist.items():
-                    st.write(f"• {interval}: {count} questions")
-            
-            elif analysis_type == "Quality Analysis":
-                st.markdown(f"### 🎯 Quality Analysis - {selected_category}")
-                
-                # Quality metrics
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    high_quality = len(analysis_df[analysis_df['quality_score'] > 10])
-                    st.metric("🌟 High Quality (>10)", high_quality)
-                
-                with col2:
-                    medium_quality = len(analysis_df[(analysis_df['quality_score'] >= 5) & (analysis_df['quality_score'] <= 10)])
-                    st.metric("📊 Medium Quality (5-10)", medium_quality)
-                
-                with col3:
-                    low_quality = len(analysis_df[analysis_df['quality_score'] < 5])
-                    st.metric("⚠️ Low Quality (<5)", low_quality)
-                
-                # Show quality issues
-                quality_issues = analysis_df[analysis_df['issues'] != 'none']
-                if not quality_issues.empty:
-                    st.markdown("**Questions with Quality Issues:**")
-                    issue_display = quality_issues[['uid', 'best_question', 'quality_score', 'issues']].copy()
-                    st.dataframe(issue_display, use_container_width=True)
-            
-            elif analysis_type == "Governance Issues":
-                st.markdown(f"### ⚖️ Governance Issues - {selected_category}")
-                
-                governance_violations = analysis_df[analysis_df['governance_compliant'] == False]
-                
-                if governance_violations.empty:
-                    st.success("✅ No governance violations found in this category!")
-                else:
-                    st.error(f"❌ Found {len(governance_violations)} governance violations")
-                    
-                    violation_display = governance_violations[
-                        ['uid', 'best_question', 'total_variants', 'issues']
-                    ].copy()
-                    
-                    violation_display = violation_display.rename(columns={
-                        'uid': 'UID',
-                        'best_question': 'Question',
-                        'total_variants': 'Variants Count',
-                        'issues': 'Issues'
-                    })
-                    
-                    st.dataframe(violation_display, use_container_width=True)
-                    
-                    # Governance recommendations
-                    st.markdown("**🔧 Recommended Actions:**")
-                    total_excess = (governance_violations['total_variants'] - UID_GOVERNANCE['max_variations_per_uid']).sum()
-                    st.write(f"• Consolidate {total_excess} excess variations")
-                    st.write(f"• Review {len(governance_violations)} UIDs for semantic duplicates")
-                    st.write("• Implement standardized question formatting")
-            
-            elif analysis_type == "Question Samples":
-                st.markdown(f"### 📋 Question Samples - {selected_category}")
-                
-                # Show best questions (highest quality)
-                best_questions = analysis_df.nlargest(5, 'quality_score')[
-                    ['uid', 'best_question', 'quality_score', 'total_variants']
-                ]
-                
-                st.markdown("**🌟 Highest Quality Questions:**")
-                for _, row in best_questions.iterrows():
-                    st.markdown(f"**UID {row['uid']}** (Quality: {row['quality_score']:.1f}, Variants: {row['total_variants']})")
-                    st.write(f"_{row['best_question']}_")
-                    st.markdown("---")
-                
-                # Show problematic questions
-                if not analysis_df[analysis_df['governance_compliant'] == False].empty:
-                    problematic = analysis_df[analysis_df['governance_compliant'] == False].head(3)
-                    
-                    st.markdown("**⚠️ Questions Needing Attention:**")
-                    for _, row in problematic.iterrows():
-                        st.markdown(f"**UID {row['uid']}** (Issues: {row['issues']})")
-                        st.write(f"_{row['best_question']}_")
-                        st.markdown("---")
-            
-            # Download category-specific data
-            st.markdown("### 📥 Download Category Data")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.download_button(
-                    f"📥 Download {selected_category} Data",
-                    analysis_df.to_csv(index=False),
-                    f"{selected_category.lower()}_analysis_{uuid4()}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-            
-            with col2:
-                st.download_button(
-                    "📊 Download Category Statistics",
-                    category_stats.to_csv(),
-                    f"category_statistics_{uuid4()}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-            
-            with col3:
-                if selected_category != "All":
-                    governance_issues = analysis_df[analysis_df['governance_compliant'] == False]
-                    if not governance_issues.empty:
-                        st.download_button(
-                            "⚖️ Download Governance Issues",
-                            governance_issues.to_csv(index=False),
-                            f"governance_issues_{selected_category.lower()}_{uuid4()}.csv",
-                            "text/csv",
-                            use_container_width=True
-                        )
-                        
-    except Exception as e:
-        logger.error(f"Category analysis failed: {e}")
-        st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
-
-# Conflict Detection Page
-elif st.session_state.page == "conflict_detection":
-    st.markdown("## 🔍 Advanced Conflict Detection")
-    st.markdown("*AI-powered conflict detection with semantic analysis and governance compliance*")
-    
-    try:
-        with st.spinner("🔄 Running advanced conflict detection..."):
-            df_reference = get_all_reference_questions()
-            
-            if df_reference.empty:
-                st.markdown('<div class="warning-card">⚠️ No reference data found.</div>', unsafe_allow_html=True)
-            else:
-                conflicts = detect_advanced_uid_conflicts(df_reference)
-        
-        if not conflicts:
-            st.success("✅ No conflicts detected! Your UID data is clean.")
-        else:
-            st.warning(f"⚠️ Found {len(conflicts)} potential conflicts")
-            
-            # Categorize conflicts by type
-            conflict_types = {}
-            for conflict in conflicts:
-                conflict_type = conflict['type']
-                if conflict_type not in conflict_types:
-                    conflict_types[conflict_type] = []
-                conflict_types[conflict_type].append(conflict)
-            
-            # Display conflicts by type
-            for conflict_type, type_conflicts in conflict_types.items():
-                st.markdown(f"### 🚨 {conflict_type.replace('_', ' ').title()} ({len(type_conflicts)} issues)")
-                
-                if conflict_type == "governance_violation":
-                    st.markdown("*UIDs exceeding the maximum allowed variations*")
-                    
-                    for conflict in type_conflicts:
-                        severity_icon = "🔴" if conflict['severity'] == 'high' else "🟡"
-                        
-                        with st.expander(f"{severity_icon} UID {conflict['uid']} - {conflict['count']} variations"):
-                            col1, col2, col3 = st.columns(3)
-                            
-                            with col1:
-                                st.write(f"**Current Count:** {conflict['count']}")
-                                st.write(f"**Max Allowed:** {conflict['max_allowed']}")
-                            
-                            with col2:
-                                st.write(f"**Excess:** {conflict['count'] - conflict['max_allowed']}")
-                                st.write(f"**Severity:** {conflict['severity']}")
-                            
-                            with col3:
-                                if conflict.get('auto_fix_available'):
-                                    st.success("🔧 Auto-fix available")
-                                else:
-                                    st.info("👋 Manual review needed")
-                
-                elif conflict_type == "semantic_conflict":
-                    st.markdown("*UIDs with semantically different questions*")
-                    
-                    for conflict in type_conflicts:
-                        with st.expander(f"🧠 UID {conflict['uid']} - Low semantic similarity ({conflict['avg_similarity']:.2f})"):
-                            st.write(f"**Average Similarity:** {conflict['avg_similarity']:.3f}")
-                            st.write(f"**Question Count:** {conflict['question_count']}")
-                            
-                            st.markdown("**Sample Questions:**")
-                            for i, question in enumerate(conflict['sample_questions'], 1):
-                                st.write(f"{i}. {question[:100]}{'...' if len(question) > 100 else ''}")
-                
-                elif conflict_type == "cross_uid_semantic_match":
-                    st.markdown("*Different UIDs with semantically similar questions*")
-                    
-                    for conflict in type_conflicts:
-                        similarity_pct = conflict['similarity'] * 100
-                        
-                        with st.expander(f"🔄 UID {conflict['uid1']} ↔ UID {conflict['uid2']} - {similarity_pct:.1f}% similar"):
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                st.markdown(f"**UID {conflict['uid1']}:**")
-                                st.write(f"_{conflict['question1']}_")
-                            
-                            with col2:
-                                st.markdown(f"**UID {conflict['uid2']}:**")
-                                st.write(f"_{conflict['question2']}_")
-                            
-                            st.write(f"**Semantic Similarity:** {similarity_pct:.1f}%")
-                            
-                            if conflict.get('auto_consolidate_recommended'):
-                                st.warning("🔄 Auto-consolidation recommended")
-                
-                elif conflict_type == "quality_inconsistency":
-                    st.markdown("*UIDs with inconsistent question quality*")
-                    
-                    for conflict in type_conflicts:
-                        with st.expander(f"📊 UID {conflict['uid']} - Quality inconsistency (std: {conflict['quality_std']:.1f})"):
-                            st.write(f"**Quality Std Dev:** {conflict['quality_std']:.2f}")
-                            st.write(f"**Quality Range:** {conflict['quality_range'][0]:.1f} - {conflict['quality_range'][1]:.1f}")
-                            
-                            if 'recommendations' in conflict:
-                                st.markdown("**Recommendations:**")
-                                for rec in conflict['recommendations']:
-                                    st.write(f"• {rec}")
-        
-        # Action buttons for conflict resolution
-        if conflicts:
-            st.markdown("---")
-            st.markdown("### 🔧 Conflict Resolution Actions")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if st.button("🔄 Generate Consolidation Plan", use_container_width=True):
-                    consolidation_plan = []
-                    
-                    for conflict in conflicts:
-                        if conflict['type'] == 'governance_violation':
-                            consolidation_plan.append({
-                                'action': 'reduce_variations',
-                                'uid': conflict['uid'],
-                                'current_count': conflict['count'],
-                                'target_count': conflict['max_allowed'],
-                                'method': 'keep_best_quality'
-                            })
-                        elif conflict['type'] == 'cross_uid_semantic_match':
-                            consolidation_plan.append({
-                                'action': 'merge_uids',
-                                'source_uid': conflict['uid2'],
-                                'target_uid': conflict['uid1'],
-                                'similarity': conflict['similarity'],
-                                'method': 'semantic_merge'
-                            })
-                    
-                    if consolidation_plan:
-                        plan_df = pd.DataFrame(consolidation_plan)
-                        st.dataframe(plan_df, use_container_width=True)
-                        
-                        st.download_button(
-                            "📥 Download Consolidation Plan",
-                            plan_df.to_csv(index=False),
-                            f"consolidation_plan_{uuid4()}.csv",
-                            "text/csv",
-                            use_container_width=True
-                        )
-            
-            with col2:
-                monthly_report = run_monthly_quality_check(df_reference)
-                
-                st.download_button(
-                    "📊 Download Quality Report",
-                    json.dumps(monthly_report, indent=2),
-                    f"monthly_quality_report_{uuid4()}.json",
-                    "application/json",
-                    use_container_width=True
-                )
-            
-            with col3:
-                # Export all conflicts
-                conflicts_df = pd.DataFrame(conflicts)
-                
-                st.download_button(
-                    "🔍 Download All Conflicts",
-                    conflicts_df.to_csv(index=False),
-                    f"detected_conflicts_{uuid4()}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-                
-    except Exception as e:
-        logger.error(f"Conflict detection failed: {e}")
-        st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
-
-# Quality Dashboard Page
-elif st.session_state.page == "quality_dashboard":
-    st.markdown("## 📈 Enhanced Quality Dashboard")
-    st.markdown("*Comprehensive quality metrics with AI insights and governance tracking*")
-    
-    try:
-        with st.spinner("📊 Generating quality dashboard..."):
-            df_reference = get_all_reference_questions()
-            enhanced_unique_df = create_enhanced_unique_questions_bank(df_reference)
-            monthly_report = run_monthly_quality_check(df_reference)
-        
-        if enhanced_unique_df.empty:
-            st.markdown('<div class="warning-card">⚠️ No data available for quality analysis.</div>', unsafe_allow_html=True)
-        else:
-            # Overall quality metrics
-            st.markdown("### 📊 Overall Quality Metrics")
-            
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                total_questions = len(enhanced_unique_df)
-                st.metric("📊 Total Questions", total_questions)
-            
-            with col2:
-                avg_quality = enhanced_unique_df['quality_score'].mean()
-                quality_trend = "📈" if avg_quality > UID_GOVERNANCE['quality_score_threshold'] else "📉"
-                st.metric("🎯 Avg Quality Score", f"{avg_quality:.1f} {quality_trend}")
-            
-            with col3:
-                governance_rate = (enhanced_unique_df['governance_compliant'] == True).sum() / len(enhanced_unique_df) * 100
-                governance_icon = "✅" if governance_rate > 90 else "⚠️" if governance_rate > 70 else "❌"
-                st.metric("⚖️ Governance Rate", f"{governance_rate:.1f}% {governance_icon}")
-            
-            with col4:
-                quality_violations = len(monthly_report['quality_issues'])
-                st.metric("🚨 Quality Issues", quality_violations)
-            
-            with col5:
-                governance_violations = len(monthly_report['governance_violations'])
-                st.metric("⚠️ Governance Violations", governance_violations)
-            
-            st.markdown("---")
-            
-            # Quality distribution
-            st.markdown("### 📊 Quality Score Distribution")
-            
-            quality_ranges = [
-                ("🌟 Excellent (>15)", enhanced_unique_df['quality_score'] > 15),
-                ("🎯 Good (10-15)", (enhanced_unique_df['quality_score'] >= 10) & (enhanced_unique_df['quality_score'] <= 15)),
-                ("📊 Average (5-10)", (enhanced_unique_df['quality_score'] >= 5) & (enhanced_unique_df['quality_score'] < 10)),
-                ("⚠️ Below Average (0-5)", (enhanced_unique_df['quality_score'] >= 0) & (enhanced_unique_df['quality_score'] < 5)),
-                ("🚨 Poor (<0)", enhanced_unique_df['quality_score'] < 0)
-            ]
-            
-            quality_cols = st.columns(len(quality_ranges))
-            
-            for i, (label, condition) in enumerate(quality_ranges):
-                count = condition.sum()
-                percentage = (count / len(enhanced_unique_df) * 100) if len(enhanced_unique_df) > 0 else 0
-                
-                with quality_cols[i]:
-                    st.metric(label, f"{count} ({percentage:.1f}%)")
-            
-            st.markdown("---")
-            
-            # Category-wise quality analysis
-            st.markdown("### 📊 Quality by Category")
-            
-            category_quality = enhanced_unique_df.groupby('survey_category').agg({
-                'quality_score': ['count', 'mean', 'std', 'min', 'max'],
-                'governance_compliant': lambda x: (x == True).sum()
-            }).round(2)
-            
-            category_quality.columns = ['Count', 'Mean_Quality', 'Std_Quality', 'Min_Quality', 'Max_Quality', 'Governance_Compliant']
-            category_quality['Governance_Rate'] = (category_quality['Governance_Compliant'] / category_quality['Count'] * 100).round(1)
-            
-            # Display category quality cards
-            for category, stats in category_quality.iterrows():
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    # Determine quality status
-                    if stats['Mean_Quality'] > 10:
-                        status_icon = "🌟"
-                        card_class = "success-card"
-                    elif stats['Mean_Quality'] > 5:
-                        status_icon = "📊"
-                        card_class = "info-card"
-                    else:
-                        status_icon = "⚠️"
-                        card_class = "warning-card"
-                    
-                    st.markdown(f'<div class="{card_class}">', unsafe_allow_html=True)
-                    st.markdown(f"**{status_icon} {category}**")
-                    st.markdown(f"Questions: {stats['Count']}")
-                    st.markdown(f"Avg Quality: {stats['Mean_Quality']:.1f}")
-                    st.markdown(f"Governance: {stats['Governance_Rate']:.1f}%")
-                    st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # Monthly quality report
-            st.markdown("### 📅 Monthly Quality Report")
-            
-            report_date = datetime.fromisoformat(monthly_report['check_date']).strftime("%B %Y")
-            st.markdown(f"**Report Date:** {report_date}")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**📊 Summary:**")
-                st.write(f"• Total Questions: {monthly_report['total_questions']:,}")
-                st.write(f"• Unique UIDs: {monthly_report['unique_uids']:,}")
-                st.write(f"• Governance Violations: {len(monthly_report['governance_violations'])}")
-                st.write(f"• Quality Issues: {len(monthly_report['quality_issues'])}")
-            
-            with col2:
-                st.markdown("**🔧 Recommendations:**")
-                for rec in monthly_report['recommendations']:
-                    st.write(f"• {rec}")
-            
-            # Detailed issues
-            if monthly_report['governance_violations']:
-                st.markdown("**⚖️ Governance Violations:**")
-                
-                violations_df = pd.DataFrame(monthly_report['governance_violations'])
-                violations_display = violations_df[['uid', 'variation_count', 'excess', 'severity']].copy()
-                violations_display = violations_display.rename(columns={
-                    'uid': 'UID',
-                    'variation_count': 'Current Count',
-                    'excess': 'Excess Variations',
-                    'severity': 'Severity'
-                })
-                
-                st.dataframe(violations_display, use_container_width=True)
-            
-            if monthly_report['quality_issues']:
-                st.markdown("**🎯 Quality Issues:**")
-                
-                quality_issues_df = pd.DataFrame(monthly_report['quality_issues'])
-                quality_display = quality_issues_df[['uid', 'low_quality_count', 'total_variations']].copy()
-                quality_display = quality_display.rename(columns={
-                    'uid': 'UID',
-                    'low_quality_count': 'Low Quality Questions',
-                    'total_variations': 'Total Variations'
-                })
-                
-                st.dataframe(quality_display, use_container_width=True)
-            
-            # Download quality reports
-            st.markdown("### 📥 Download Quality Reports")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.download_button(
-                    "📊 Download Quality Dashboard",
-                    enhanced_unique_df.to_csv(index=False),
-                    f"quality_dashboard_{uuid4()}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-            
-            with col2:
-                st.download_button(
-                    "📅 Download Monthly Report",
-                    json.dumps(monthly_report, indent=2),
-                    f"monthly_quality_report_{uuid4()}.json",
-                    "application/json",
-                    use_container_width=True
-                )
-            
-            with col3:
-                st.download_button(
-                    "📊 Download Category Quality Analysis",
-                    category_quality.to_csv(),
-                    f"category_quality_analysis_{uuid4()}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-                
-    except Exception as e:
-        logger.error(f"Quality dashboard failed: {e}")
-        st.markdown(f'<div class="warning-card">❌ Error: {e}</div>', unsafe_allow_html=True)
-
-# Add any other existing pages here...
-else:
-    st.markdown("### 🚧 Page Under Development")
-    st.markdown("This page is being enhanced with new AI-powered features.")
-    st.markdown("Please use the sidebar to navigate to available enhanced features.")
-    
-    # Quick navigation for development
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("🏠 Go to Home", use_container_width=True):
-            st.session_state.page = "home"
-            st.rerun()
-    
-    with col2:
-        if st.button("⚙️ Enhanced Configure", use_container_width=True):
-            st.session_state.page = "enhanced_configure_survey"
-            st.rerun()
-    
-    with col3:
-        if st.button("⭐ Enhanced Question Bank", use_container_width=True):
-            st.session_state.page = "enhanced_unique_bank"
-            st.rerun()
+# Footer with version and governance info
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666; font-size: 0.8em;'>
+    🧠 UID Matcher Pro v2.0 - Enhanced with Semantic Matching & Governance<br>
+    Governance Compliance • Quality Assurance • Conflict Detection<br>
+    Built with Streamlit • Powered by SentenceTransformers
+</div>
+""", unsafe_allow_html=True)
