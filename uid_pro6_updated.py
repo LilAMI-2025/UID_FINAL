@@ -1086,15 +1086,13 @@ elif st.session_state.page == "view_question_bank":
             avg_per_uid = len(df_reference) / unique_uids if unique_uids > 0 else 0
             st.metric("📈 Avg per UID", f"{avg_per_uid:.1f}")
         with col4:
-            # Categories from Snowflake survey_title (secondary source)
-            df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey_from_surveymonkey)
-            categories = df_reference['survey_category'].nunique()
-            st.metric("📋 Categories", categories)
+            # NO categorization possible without survey_title
+            st.metric("📋 Categories", "N/A - No survey_title")
         
         # Display sample data showing Snowflake columns
         st.markdown("### 📝 Snowflake Question Bank Sample")
-        st.write("**Columns:** `HEADING_0` (reference questions), `UID` (assignments), `survey_title` (secondary)")
-        display_columns = ['uid', 'heading_0', 'survey_title', 'survey_category']
+        st.write("**Columns:** `HEADING_0` (reference questions), `UID` (assignments) - NO survey_title in Snowflake")
+        display_columns = ['uid', 'heading_0']
         st.dataframe(df_reference[display_columns].head(100), use_container_width=True)
         
         # Export options
@@ -1191,54 +1189,14 @@ elif st.session_state.page == "unique_question_bank":
         logger.error(f"Unique questions bank error: {e}")
 
 elif st.session_state.page == "categorized_questions":
-    st.markdown("## 📊 Questions by Survey Category (Snowflake Data)")
-    st.markdown('<div class="data-source-info">❄️ <strong>Data Source:</strong> Snowflake HEADING_0 categorized by survey_title</div>', unsafe_allow_html=True)
+    st.markdown("## 📊 Questions by Survey Category")
+    st.markdown('<div class="warning-card">⚠️ <strong>Note:</strong> Snowflake has no survey_title column. Categorization only available from SurveyMonkey data.</div>', unsafe_allow_html=True)
     
-    if not sf_status:
-        st.error("❌ Snowflake connection required for categorized analysis")
-        st.stop()
+    st.info("Categorization requires SurveyMonkey survey_title data. Snowflake only contains HEADING_0 and UID.")
     
-    try:
-        with st.spinner("🔄 Loading and categorizing Snowflake questions..."):
-            df_reference = get_all_reference_questions_from_snowflake()
-            
-            if df_reference.empty:
-                st.warning("⚠️ No reference data found in Snowflake")
-                st.stop()
-            
-            # Add categories based on Snowflake survey_title
-            df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey_from_surveymonkey)
-        
-        st.success(f"✅ Categorized {len(df_reference):,} Snowflake questions")
-        
-        # Category overview
-        st.markdown("### 📊 Category Overview (from Snowflake survey_title)")
-        category_stats = df_reference.groupby('survey_category').agg({
-            'heading_0': 'count',
-            'uid': 'nunique',
-            'survey_title': 'nunique'
-        }).rename(columns={
-            'heading_0': 'Total Questions',
-            'uid': 'Unique UIDs',
-            'survey_title': 'Surveys'
-        })
-        
-        st.dataframe(category_stats, use_container_width=True)
-        
-        # Visual analysis
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Questions by Category**")
-            st.bar_chart(category_stats['Total Questions'])
-        
-        with col2:
-            st.markdown("**UIDs by Category**")
-            st.bar_chart(category_stats['Unique UIDs'])
-    
-    except Exception as e:
-        st.error(f"❌ Failed to categorize questions: {str(e)}")
-        logger.error(f"Categorization error: {e}")
+    if st.button("📊 Go to SurveyMonkey Categories"):
+        st.session_state.page = "view_surveys"
+        st.rerun()
 
 elif st.session_state.page == "configure_survey":
     st.markdown("## ⚙️ Configure Survey with UID Assignment")
@@ -1480,10 +1438,9 @@ elif st.session_state.page == "data_quality":
             st.bar_chart(length_counts)
         
         with col2:
-            st.markdown("**Questions by Survey Category (from Snowflake survey_title):**")
-            df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey_from_surveymonkey)
-            category_counts = df_reference['survey_category'].value_counts()
-            st.bar_chart(category_counts)
+            st.markdown("**HEADING_0 Quality (Snowflake only has HEADING_0 + UID):**")
+            st.write("✅ No survey_title categorization needed")
+            st.write("📊 Focus on HEADING_0 quality only")
         
         # Top problematic UIDs
         if len(excessive_uids) > 0:
@@ -1527,7 +1484,7 @@ with footer_col1:
 with footer_col2:
     st.markdown("**📊 Data Sources**")
     st.write("📊 SurveyMonkey: survey_title, question_text")
-    st.write("❄️ Snowflake: HEADING_0, UID")
+    st.write("❄️ Snowflake: HEADING_0, UID ONLY")
 
 with footer_col3:
     st.markdown("**📊 Current Session**")
