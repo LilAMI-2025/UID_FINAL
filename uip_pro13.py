@@ -1063,6 +1063,10 @@ elif st.session_state.page == "configure_survey":
                                         st.session_state.uid_changes = {}
                                         st.success("✅ UID changes saved!")
                                         st.rerun()
+    
+    except Exception as e:
+        logger.error(f"Configure survey failed: {e}")
+        st.error(f"❌ Error configuring survey: {e}")
 
 # New Survey Categorization Page
 elif st.session_state.page == "survey_categorization":
