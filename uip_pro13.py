@@ -226,10 +226,11 @@ def categorize_survey(survey_title):
     
     return "Other"
 
-# Enhanced Semantic UID Assignment with Governance
+# Enhanced Semantic UID Assignment with Governance (Updated for Snowflake data)
 def enhanced_semantic_matching_with_governance(question_text, existing_uids_data, category=None, threshold=0.75):
     """
     Enhanced semantic matching with governance rules and category awareness
+    Note: existing_uids_data structure updated for Snowflake data
     """
     if not existing_uids_data:
         return None, 0.0, "new_assignment"
@@ -241,7 +242,7 @@ def enhanced_semantic_matching_with_governance(question_text, existing_uids_data
         # Get embeddings
         question_embedding = model.encode([standardized_question], convert_to_tensor=True)
         
-        # Filter existing questions by category if provided
+        # Filter existing questions by category if provided and available
         if category and category != "Unknown":
             category_filtered_uids = {
                 uid: data for uid, data in existing_uids_data.items() 
@@ -277,15 +278,16 @@ def enhanced_semantic_matching_with_governance(question_text, existing_uids_data
         logger.error(f"Enhanced semantic matching failed: {e}")
         return None, 0.0, "error"
 
-# Enhanced UID Assignment with Category and Governance
+# Enhanced UID Assignment with Category and Governance (Updated for Snowflake data)
 def assign_uid_with_enhanced_governance(question_text, existing_uids_data, survey_category=None):
     """
     Assign UID with enhanced governance rules, category awareness, and standardization
+    Note: Updated to work with SurveyMonkey questions vs Snowflake HEADING_0 data
     """
     # Standardize question format first
     standardized_question = standardize_question_format(question_text)
     
-    # Try semantic matching with category preference
+    # Try semantic matching with category preference (if we have category info)
     matched_uid, confidence, match_type = enhanced_semantic_matching_with_governance(
         standardized_question, existing_uids_data, survey_category
     )
@@ -350,14 +352,14 @@ def get_snowflake_engine():
 
 @st.cache_data
 def get_all_reference_questions():
-    """Fetch ALL reference questions from Snowflake"""
+    """Fetch ALL reference questions from Snowflake - only HEADING_0 and UID"""
     all_data = []
     limit = 10000
     offset = 0
     
     while True:
         query = """
-            SELECT HEADING_0, UID, SURVEY_TITLE
+            SELECT HEADING_0, UID
             FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
             WHERE UID IS NOT NULL
             ORDER BY CAST(UID AS INTEGER) ASC
@@ -384,10 +386,11 @@ def get_all_reference_questions():
         return pd.concat(all_data, ignore_index=True)
     return pd.DataFrame()
 
-# Enhanced Unique Questions Bank Creation
+# Enhanced Unique Questions Bank Creation (Updated for Snowflake data)
 def create_enhanced_unique_questions_bank(df_reference):
     """
     Create enhanced unique questions bank with categories and governance
+    Note: df_reference only contains HEADING_0 and UID from Snowflake
     """
     if df_reference.empty:
         return pd.DataFrame()
@@ -402,7 +405,6 @@ def create_enhanced_unique_questions_bank(df_reference):
             continue
             
         uid_questions = group['heading_0'].tolist()
-        survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
         
         # Standardize and score questions
         scored_questions = []
@@ -415,14 +417,8 @@ def create_enhanced_unique_questions_bank(df_reference):
         best_question_data = max(scored_questions, key=lambda x: x[2])
         best_original, best_standardized, best_score = best_question_data
         
-        # Determine categories from survey titles
-        categories = []
-        for title in survey_titles:
-            category = categorize_survey(title)
-            if category not in categories:
-                categories.append(category)
-        
-        primary_category = categories[0] if len(categories) == 1 else ("Mixed" if len(categories) > 1 else "Unknown")
+        # Since we don't have survey titles from Snowflake, we'll categorize based on question content
+        question_category = categorize_question_by_content(best_original)
         
         unique_questions.append({
             'uid': uid,
@@ -431,12 +427,12 @@ def create_enhanced_unique_questions_bank(df_reference):
             'total_variants': len(uid_questions),
             'question_length': len(str(best_original)),
             'question_words': len(str(best_original).split()),
-            'survey_category': primary_category,
-            'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
+            'survey_category': question_category,  # Categorized from question content
+            'survey_titles': 'From Snowflake Data',  # Placeholder since we don't have survey titles
             'quality_score': best_score,
             'governance_compliant': len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid'],
-            'all_categories': ', '.join(categories) if categories else 'Unknown',
-            'category_count': len(categories),
+            'all_categories': question_category,
+            'category_count': 1,
             'all_variants': uid_questions
         })
     
@@ -453,6 +449,54 @@ def create_enhanced_unique_questions_bank(df_reference):
             unique_df = unique_df.sort_values('uid')
     
     return unique_df
+
+# New function to categorize questions by content (since we don't have survey titles from Snowflake)
+def categorize_question_by_content(question_text):
+    """
+    Categorize questions based on their content when survey title is not available
+    """
+    if not question_text:
+        return "Unknown"
+    
+    text_lower = str(question_text).lower()
+    
+    # Application-related keywords
+    if any(keyword in text_lower for keyword in ['apply', 'application', 'register', 'join', 'signup', 'eligibility']):
+        return 'Application'
+    
+    # Pre-programme keywords
+    if any(keyword in text_lower for keyword in ['baseline', 'preparation', 'readiness', 'before', 'pre-']):
+        return 'Pre programme'
+    
+    # Enrollment keywords
+    if any(keyword in text_lower for keyword in ['enrollment', 'enroll', 'onboard', 'welcome', 'start']):
+        return 'Enrollment'
+    
+    # Progress keywords
+    if any(keyword in text_lower for keyword in ['progress', 'milestone', 'review', 'assessment', 'evaluation']):
+        return 'Progress Review'
+    
+    # Impact keywords
+    if any(keyword in text_lower for keyword in ['impact', 'outcome', 'result', 'change', 'improvement', 'benefit']):
+        return 'Impact'
+    
+    # GROW (check for CAPS)
+    if 'GROW' in question_text:
+        return 'GROW'
+    
+    # Feedback keywords
+    if any(keyword in text_lower for keyword in ['feedback', 'rating', 'satisfaction', 'opinion', 'rate']):
+        return 'Feedback'
+    
+    # Pulse keywords
+    if any(keyword in text_lower for keyword in ['pulse', 'quick', 'brief', 'check']):
+        return 'Pulse'
+    
+    # Demographic/profile questions
+    if any(keyword in text_lower for keyword in ['name', 'age', 'gender', 'location', 'company', 'role', 'position', 'department']):
+        return 'Profile'
+    
+    return "Other"
 
 # Enhanced question quality scoring
 def score_question_quality(question):
@@ -794,6 +838,7 @@ elif st.session_state.page == "configure_survey":
                             df_questions['survey_category'] = survey_category
                             
                             # Prepare existing UIDs data for semantic matching
+                            # Note: This comes from Snowflake (HEADING_0, UID) and we categorize by question content
                             unique_bank = st.session_state.unique_questions_bank
                             existing_uids_data = {}
                             
@@ -802,7 +847,7 @@ elif st.session_state.page == "configure_survey":
                                     existing_uids_data[row['uid']] = {
                                         'best_question': row['standardized_question'] if enable_standardization else row['best_question'],
                                         'variation_count': row['total_variants'],
-                                        'category': row['survey_category'],
+                                        'category': row['survey_category'],  # This is categorized from question content
                                         'quality_score': row['quality_score']
                                     }
                             
@@ -1071,7 +1116,10 @@ elif st.session_state.page == "configure_survey":
 # New Survey Categorization Page
 elif st.session_state.page == "survey_categorization":
     st.markdown("## 📊 Survey Categorization & UID Assignment")
-    st.markdown("*Categorize surveys and assign UIDs based on categories with unique questions*")
+    st.markdown("*Categorize SurveyMonkey surveys and assign UIDs based on Snowflake HEADING_0 data*")
+    
+    # Data source explanation
+    st.info("**📋 Data Sources:** Survey categories come from SurveyMonkey survey titles. Unique questions and UIDs come from Snowflake HEADING_0 data, categorized by question content.")
     
     try:
         # Load surveys and unique questions bank
@@ -1340,7 +1388,10 @@ elif st.session_state.page == "survey_categorization":
 # Enhanced Unique Questions Bank Page
 elif st.session_state.page == "unique_question_bank":
     st.markdown("## ⭐ Enhanced Unique Questions Bank")
-    st.markdown("*Enhanced with standardization, governance, and category-based organization*")
+    st.markdown("*Enhanced with standardization, governance, and category-based organization from Snowflake HEADING_0 data*")
+    
+    # Data source clarification
+    st.info("**📊 Data Source:** Questions and UIDs from Snowflake HEADING_0 data. Categories determined by question content analysis since survey titles are not available in Snowflake.")
     
     try:
         with st.spinner("🔄 Loading enhanced unique questions bank..."):
