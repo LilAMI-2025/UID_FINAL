@@ -1227,7 +1227,7 @@ with st.sidebar:
     if st.button("⚙️ Configure Survey", use_container_width=True):
         st.session_state.page = "configure_survey"
         st.rerun()
-    if st.button("➕ Create New Survey", use_container_width=True):
+    if st.button("➕ Create New Survey (1)", use_container_width=True):
         st.session_state.page = "create_survey"
         st.rerun()
     
@@ -1238,7 +1238,7 @@ with st.sidebar:
     if st.button("📖 View Question Bank", use_container_width=True):
         st.session_state.page = "view_question_bank"
         st.rerun()
-    if st.button("⭐ Unique Questions Bank", use_container_width=True):
+    if st.button("⭐ Unique Questions Bank (1)", use_container_width=True):
         st.session_state.page = "unique_question_bank"
         st.rerun()
     if st.button("📊 Categorized Questions", use_container_width=True):
@@ -1357,7 +1357,7 @@ if st.session_state.page == "home":
         if st.button("👁️ View & Analyze Surveys", use_container_width=True):
             st.session_state.page = "view_surveys"
             st.rerun()
-        if st.button("➕ Create New Survey", use_container_width=True):
+        if st.button("➕ Create New Survey (2)", use_container_width=True):
             st.session_state.page = "create_survey"
             st.rerun()
     
@@ -1366,7 +1366,7 @@ if st.session_state.page == "home":
         if st.button("📖 View Full Question Bank", use_container_width=True):
             st.session_state.page = "view_question_bank"
             st.rerun()
-        if st.button("⭐ Unique Questions Bank", use_container_width=True):
+        if st.button("⭐ Unique Questions Bank (2)", use_container_width=True):
             st.session_state.page = "unique_question_bank"
             st.rerun()
     
