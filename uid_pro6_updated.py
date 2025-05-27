@@ -324,7 +324,7 @@ def create_unique_questions_bank_from_snowflake(df_reference):
         uid_questions = group['heading_0'].tolist()
         best_question = get_best_question_for_uid(uid_questions)
         
-        # For categorization, Snowflake may have survey_title but it's secondary
+        # For categorization, Snowflake may have title but it's secondary
         # Primary categorization should be from SurveyMonkey when available
         survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
         if len(survey_titles) > 0:
@@ -509,7 +509,7 @@ def get_snowflake_engine():
 def get_all_reference_questions_from_snowflake():
     """
     Fetch ALL reference questions from Snowflake with pagination
-    Returns: DataFrame with HEADING_0, UID, SURVEY_TITLE columns
+    Returns: DataFrame with HEADING_0, UID, TITLE columns
     """
     all_data = []
     limit = 10000
@@ -517,7 +517,7 @@ def get_all_reference_questions_from_snowflake():
     
     while True:
         query = """
-            SELECT HEADING_0, UID, SURVEY_TITLE
+            SELECT HEADING_0, UID, TITLE
             FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
             WHERE UID IS NOT NULL
             ORDER BY CAST(UID AS INTEGER) ASC
@@ -547,7 +547,7 @@ def get_all_reference_questions_from_snowflake():
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         # Ensure proper column naming
-        final_df.columns = ['heading_0', 'uid', 'survey_title']
+        final_df.columns = ['heading_0', 'uid', 'title']
         logger.info(f"Total reference questions fetched from Snowflake: {len(final_df)}")
         return final_df
     else:
@@ -557,7 +557,7 @@ def get_all_reference_questions_from_snowflake():
 def run_snowflake_target_query():
     """Get target questions without UIDs from Snowflake"""
     query = """
-        SELECT DISTINCT HEADING_0, SURVEY_TITLE
+        SELECT DISTINCT HEADING_0, TITLE
         FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
         WHERE UID IS NULL AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
         ORDER BY HEADING_0
@@ -813,7 +813,7 @@ if st.session_state.page == "home":
         st.markdown("**What we use:**")
         st.markdown("• `HEADING_0` → Reference questions with UIDs")
         st.markdown("• `UID` → Existing UID assignments")
-        st.markdown("• `survey_title` → Secondary categorization")
+        st.markdown("• `title` → Secondary categorization")
         
         st.markdown("**Purpose:** Reference database for UID matching")
     
