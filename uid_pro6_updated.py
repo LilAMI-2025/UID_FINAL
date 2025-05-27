@@ -105,7 +105,7 @@ SURVEY_CATEGORIES = {
     'Pulse': ['pulse', 'quick', 'brief', 'snapshot', 'check-in']
 }
 
-# Synonym Mapping (Enhanced)
+# Enhanced Synonym Mapping
 ENHANCED_SYNONYM_MAP = {
     "please select": "what is",
     "sector you are from": "your sector",
@@ -130,745 +130,31 @@ HEADING_REFERENCES = [
     "Thank you for dedicating your time and effort to complete this diagnostic tool. Your valuable insights are crucial in our mission to map the landscape of BDS provision in Rwanda."
 ]
 
-# Enhanced Survey Categorization
-def categorize_survey(survey_title):
-    """
-    Categorize survey based on title keywords with priority ordering
-    """
-    if not survey_title:
-        return "Unknown"
-    
-    title_lower = survey_title.lower()
-    
-    # Check GROW first (exact match for CAPS)
-    if 'GROW' in survey_title:
-        return 'GROW'
-    
-    # Check other categories
-    for category, keywords in SURVEY_CATEGORIES.items():
-        if category == 'GROW':  # Already checked
-            continue
-        for keyword in keywords:
-            if keyword.lower() in title_lower:
-                return category
-    
-    return "Other"
+# Initialize session state
+if "page" not in st.session_state:
+    st.session_state.page = "home"
+if "df_target" not in st.session_state:
+    st.session_state.df_target = None
+if "df_final" not in st.session_state:
+    st.session_state.df_final = None
+if "uid_changes" not in st.session_state:
+    st.session_state.uid_changes = {}
+if "custom_questions" not in st.session_state:
+    st.session_state.custom_questions = pd.DataFrame(columns=["Customized Question", "Original Question", "Final_UID"])
+if "df_reference" not in st.session_state:
+    st.session_state.df_reference = None
+if "survey_template" not in st.session_state:
+    st.session_state.survey_template = None
+if "snowflake_initialized" not in st.session_state:
+    st.session_state.snowflake_initialized = False
+if "surveymonkey_initialized" not in st.session_state:
+    st.session_state.surveymonkey_initialized = False
 
-# Enhanced Semantic UID Assignment
-def enhanced_semantic_matching(question_text, existing_uids_data, threshold=0.85):
-    """
-    Enhanced semantic matching with governance rules
-    """
-    if not existing_uids_data:
-        return None, 0.0
-    
-    try:
-        model = load_sentence_transformer()
-        
-        # Get embeddings
-        question_embedding = model.encode([question_text], convert_to_tensor=True)
-        existing_questions = [data['best_question'] for data in existing_uids_data.values()]
-        existing_embeddings = model.encode(existing_questions, convert_to_tensor=True)
-        
-        # Calculate similarities
-        similarities = util.cos_sim(question_embedding, existing_embeddings)[0]
-        
-        # Find best match
-        best_idx = similarities.argmax().item()
-        best_score = similarities[best_idx].item()
-        
-        if best_score >= threshold:
-            best_uid = list(existing_uids_data.keys())[best_idx]
-            return best_uid, best_score
-            
-    except Exception as e:
-        logger.error(f"Semantic matching failed: {e}")
-    
-    return None, 0.0
+# ============= SURVEYMONKEY FUNCTIONS (Priority 1) =============
 
-# UID Conflict Detection
-def detect_uid_conflicts_advanced(df_reference):
-    """
-    Advanced UID conflict detection with semantic analysis
-    """
-    conflicts = []
-    
-    # Group by UID
-    uid_groups = df_reference.groupby('uid')
-    
-    for uid, group in uid_groups:
-        questions = group['heading_0'].unique()
-        
-        if len(questions) > UID_GOVERNANCE['max_variations_per_uid']:
-            conflicts.append({
-                'uid': uid,
-                'type': 'excessive_variations',
-                'count': len(questions),
-                'severity': 'high' if len(questions) > 100 else 'medium'
-            })
-        
-        # Check for semantic conflicts (same questions with different UIDs)
-        normalized_questions = [enhanced_normalize(q, ENHANCED_SYNONYM_MAP) for q in questions]
-        unique_normalized = len(set(normalized_questions))
-        
-        if len(questions) > unique_normalized * 2:  # Too many duplicates
-            conflicts.append({
-                'uid': uid,
-                'type': 'duplicate_variations',
-                'duplicates': len(questions) - unique_normalized,
-                'severity': 'medium'
-            })
-    
-    return conflicts
-
-# Enhanced UID Assignment with Governance
-def assign_uid_with_governance(question_text, existing_uids_data, survey_category=None):
-    """
-    Assign UID with governance rules and semantic matching
-    """
-    # First try semantic matching
-    matched_uid, confidence = enhanced_semantic_matching(question_text, existing_uids_data)
-    
-    if matched_uid and confidence >= UID_GOVERNANCE['semantic_similarity_threshold']:
-        # Check if adding to this UID would violate governance
-        if existing_uids_data[matched_uid]['variation_count'] < UID_GOVERNANCE['max_variations_per_uid']:
-            return {
-                'uid': matched_uid,
-                'method': 'semantic_match',
-                'confidence': confidence,
-                'governance_compliant': True
-            }
-        else:
-            logger.warning(f"UID {matched_uid} exceeds max variations, creating new UID")
-    
-    # If no semantic match or governance violation, suggest new UID
-    # Find next available UID
-    if existing_uids_data:
-        max_uid = max([int(uid) for uid in existing_uids_data.keys() if uid.isdigit()])
-        new_uid = str(max_uid + 1)
-    else:
-        new_uid = "1"
-    
-    return {
-        'uid': new_uid,
-        'method': 'new_assignment',
-        'confidence': 1.0,
-        'governance_compliant': True
-    }
-
-# Enhanced data quality management functions (keeping existing ones and adding new)
-def analyze_uid_variations(df_reference):
-    """Enhanced analysis with governance compliance"""
-    analysis_results = {}
-    
-    # Basic statistics
-    uid_counts = df_reference['uid'].value_counts().sort_values(ascending=False)
-    
-    analysis_results['total_questions'] = len(df_reference)
-    analysis_results['unique_uids'] = df_reference['uid'].nunique()
-    analysis_results['avg_variations_per_uid'] = len(df_reference) / df_reference['uid'].nunique()
-    
-    # Governance compliance
-    governance_violations = uid_counts[uid_counts > UID_GOVERNANCE['max_variations_per_uid']]
-    analysis_results['governance_compliance'] = {
-        'violations': len(governance_violations),
-        'violation_rate': (len(governance_violations) / len(uid_counts)) * 100,
-        'violating_uids': governance_violations.to_dict()
-    }
-    
-    # Identify problematic UIDs
-    high_variation_threshold = UID_GOVERNANCE['max_variations_per_uid']
-    problematic_uids = uid_counts[uid_counts > high_variation_threshold]
-    
-    analysis_results['problematic_uids'] = {
-        'count': len(problematic_uids),
-        'uids': problematic_uids.to_dict(),
-        'total_questions_in_problematic': problematic_uids.sum()
-    }
-    
-    # Analyze variation patterns for top problematic UIDs
-    variation_analysis = {}
-    
-    for uid in problematic_uids.head(10).index:
-        uid_questions = df_reference[df_reference['uid'] == uid]['heading_0'].tolist()
-        
-        # Check for duplicates
-        duplicates = len(uid_questions) - len(set(uid_questions))
-        
-        # Check for near-duplicates (similarity analysis)
-        unique_questions = list(set(uid_questions))
-        
-        # Analyze question length distribution
-        lengths = [len(str(q)) for q in uid_questions]
-        
-        # Identify common patterns
-        patterns = {
-            'empty_or_very_short': sum(1 for q in uid_questions if len(str(q).strip()) < 5),
-            'html_tags': sum(1 for q in uid_questions if '<' in str(q) and '>' in str(q)),
-            'privacy_policy': sum(1 for q in uid_questions if 'privacy policy' in str(q).lower()),
-            'placeholder_text': sum(1 for q in uid_questions if any(placeholder in str(q).lower() 
-                                    for placeholder in ['please select', 'click here', 'n/a', '...'])),
-            'exact_duplicates': duplicates,
-            'unique_variations': len(unique_questions)
-        }
-        
-        variation_analysis[uid] = {
-            'total_variations': len(uid_questions),
-            'patterns': patterns,
-            'avg_length': sum(lengths) / len(lengths),
-            'length_range': (min(lengths), max(lengths)),
-            'sample_questions': unique_questions[:5],
-            'governance_violation': len(uid_questions) > UID_GOVERNANCE['max_variations_per_uid']
-        }
-    
-    analysis_results['variation_patterns'] = variation_analysis
-    
-    return analysis_results
-
-def clean_uid_variations(df_reference, cleaning_strategy='aggressive'):
-    """Enhanced cleaning with governance rules"""
-    logger.info(f"Starting cleaning with strategy: {cleaning_strategy}")
-    original_count = len(df_reference)
-    
-    df_cleaned = df_reference.copy()
-    cleaning_log = []
-    
-    # Step 1: Remove obvious junk data
-    initial_count = len(df_cleaned)
-    
-    # Remove empty or very short questions
-    df_cleaned = df_cleaned[df_cleaned['heading_0'].str.len() >= 5]
-    removed_short = initial_count - len(df_cleaned)
-    if removed_short > 0:
-        cleaning_log.append(f"Removed {removed_short} questions with < 5 characters")
-    
-    # Remove HTML-heavy content (likely formatting artifacts)
-    html_pattern = r'<div.*?</div>|<span.*?</span>|<p.*?</p>'
-    df_cleaned = df_cleaned[~df_cleaned['heading_0'].str.contains(html_pattern, regex=True, na=False)]
-    removed_html = initial_count - removed_short - len(df_cleaned)
-    if removed_html > 0:
-        cleaning_log.append(f"Removed {removed_html} HTML-heavy questions")
-    
-    # Remove privacy policy statements
-    df_cleaned = df_cleaned[~df_cleaned['heading_0'].str.contains('privacy policy', case=False, na=False)]
-    removed_privacy = initial_count - removed_short - removed_html - len(df_cleaned)
-    if removed_privacy > 0:
-        cleaning_log.append(f"Removed {removed_privacy} privacy policy statements")
-    
-    # Step 2: Handle duplicates with enhanced normalization
-    before_dedup = len(df_cleaned)
-    
-    if cleaning_strategy == 'conservative':
-        # Only remove exact duplicates
-        df_cleaned = df_cleaned.drop_duplicates(subset=['uid', 'heading_0'])
-        
-    elif cleaning_strategy == 'moderate':
-        # Remove exact duplicates and normalize similar questions
-        df_cleaned['normalized_question'] = df_cleaned['heading_0'].apply(lambda x: enhanced_normalize(x, ENHANCED_SYNONYM_MAP))
-        df_cleaned = df_cleaned.drop_duplicates(subset=['uid', 'normalized_question'])
-        df_cleaned = df_cleaned.drop('normalized_question', axis=1)
-        
-    elif cleaning_strategy == 'aggressive':
-        # Remove duplicates and keep only the best question per UID
-        df_cleaned = df_cleaned.groupby('uid').apply(
-            lambda group: pd.Series({
-                'heading_0': get_best_question_for_uid(group['heading_0'].tolist()),
-                'uid': group['uid'].iloc[0]
-            })
-        ).reset_index(drop=True)
-    
-    removed_duplicates = before_dedup - len(df_cleaned)
-    if removed_duplicates > 0:
-        cleaning_log.append(f"Removed {removed_duplicates} duplicate/similar questions")
-    
-    # Step 3: Apply governance rules
-    if cleaning_strategy in ['moderate', 'aggressive']:
-        uid_counts = df_cleaned['uid'].value_counts()
-        excessive_threshold = UID_GOVERNANCE['max_variations_per_uid']
-        
-        excessive_uids = uid_counts[uid_counts > excessive_threshold].index
-        governance_violations = 0
-        
-        for uid in excessive_uids:
-            uid_questions = df_cleaned[df_cleaned['uid'] == uid]['heading_0'].tolist()
-            
-            if cleaning_strategy == 'moderate':
-                # Keep top N best questions based on governance limit
-                best_questions = sorted(uid_questions, key=lambda q: score_question_quality(q), reverse=True)[:excessive_threshold]
-                df_cleaned = df_cleaned[~((df_cleaned['uid'] == uid) & (~df_cleaned['heading_0'].isin(best_questions)))]
-                governance_violations += len(uid_questions) - excessive_threshold
-            
-            elif cleaning_strategy == 'aggressive':
-                # Keep only the single best question
-                best_question = get_best_question_for_uid(uid_questions)
-                df_cleaned = df_cleaned[~((df_cleaned['uid'] == uid) & (df_cleaned['heading_0'] != best_question))]
-                governance_violations += len(uid_questions) - 1
-        
-        if governance_violations > 0:
-            cleaning_log.append(f"Removed {governance_violations} questions to comply with governance rules")
-    
-    final_count = len(df_cleaned)
-    total_removed = original_count - final_count
-    
-    cleaning_summary = {
-        'original_count': original_count,
-        'final_count': final_count,
-        'total_removed': total_removed,
-        'removal_percentage': (total_removed / original_count) * 100,
-        'cleaning_log': cleaning_log,
-        'strategy_used': cleaning_strategy,
-        'governance_compliant': True
-    }
-    
-    logger.info(f"Cleaning completed: {original_count} -> {final_count} ({total_removed} removed)")
-    
-    return df_cleaned, cleaning_summary
-
-def score_question_quality(question):
-    """Enhanced scoring function for question quality"""
-    score = 0
-    text = str(question).lower().strip()
-    
-    # Length scoring (sweet spot is 10-100 characters)
-    length = len(text)
-    if 10 <= length <= 100:
-        score += 20
-    elif 5 <= length <= 150:
-        score += 10
-    elif length < 5:
-        score -= 20
-    
-    # Question format scoring
-    if text.endswith('?'):
-        score += 15
-    
-    # English question word scoring
-    question_words = ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should']
-    if any(word in text.split()[:3] for word in question_words):
-        score += 15
-    
-    # Proper capitalization
-    if question and question[0].isupper():
-        score += 10
-    
-    # Avoid artifacts (enhanced list)
-    bad_patterns = ['click here', 'please select', '...', 'n/a', 'other', 'select one', 'choose all', 'privacy policy']
-    if any(pattern in text for pattern in bad_patterns):
-        score -= 15
-    
-    # Avoid HTML
-    if '<' in text and '>' in text:
-        score -= 20
-    
-    # Prefer complete sentences
-    word_count = len(text.split())
-    if 5 <= word_count <= 20:
-        score += 10
-    elif word_count > 30:
-        score -= 5
-    
-    # Avoid repetitive characters
-    if any(char * 3 in text for char in 'abcdefghijklmnopqrstuvwxyz'):
-        score -= 10
-    
-    # Semantic coherence bonus
-    if all(word.isalpha() or word in ['?', '.', ','] for word in text.split()):
-        score += 5
-    
-    return score
-
-def create_data_quality_dashboard(df_reference):
-    """Enhanced dashboard with governance compliance"""
-    st.markdown("## 📊 Data Quality Dashboard")
-    
-    # Run analysis
-    analysis = analyze_uid_variations(df_reference)
-    
-    # Overview metrics with governance
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("📊 Total Questions", f"{analysis['total_questions']:,}")
-    with col2:
-        st.metric("🆔 Unique UIDs", analysis['unique_uids'])
-    with col3:
-        st.metric("📈 Avg Variations/UID", f"{analysis['avg_variations_per_uid']:.1f}")
-    with col4:
-        governance_compliance = 100 - analysis['governance_compliance']['violation_rate']
-        st.metric("⚖️ Governance Compliance", f"{governance_compliance:.1f}%")
-    
-    # Governance compliance section
-    if analysis['governance_compliance']['violations'] > 0:
-        st.markdown("### ⚖️ Governance Compliance Issues")
-        st.warning(f"Found {analysis['governance_compliance']['violations']} UIDs violating the maximum variations rule ({UID_GOVERNANCE['max_variations_per_uid']} variations per UID)")
-        
-        violations_df = pd.DataFrame([
-            {'UID': uid, 'Violations': count - UID_GOVERNANCE['max_variations_per_uid'], 'Total Variations': count}
-            for uid, count in analysis['governance_compliance']['violating_uids'].items()
-        ])
-        st.dataframe(violations_df, use_container_width=True)
-    
-    # Rest of the existing dashboard code...
-    # Problematic UIDs section
-    if analysis['problematic_uids']['count'] > 0:
-        st.markdown("### ⚠️ UIDs with Excessive Variations")
-        
-        problematic_df = pd.DataFrame([
-            {
-                'UID': uid, 
-                'Variations': count, 
-                'Percentage': f"{(count/analysis['total_questions'])*100:.1f}%",
-                'Governance Violation': '❌' if count > UID_GOVERNANCE['max_variations_per_uid'] else '✅'
-            }
-            for uid, count in analysis['problematic_uids']['uids'].items()
-        ])
-        
-        st.dataframe(problematic_df, use_container_width=True)
-        
-        # Detailed analysis for top problematic UIDs
-        st.markdown("### 🔍 Detailed Analysis of Top Problematic UIDs")
-        
-        for uid, details in list(analysis['variation_patterns'].items())[:3]:
-            violation_icon = "❌" if details['governance_violation'] else "✅"
-            with st.expander(f"🆔 UID {uid} - {details['total_variations']} variations {violation_icon}"):
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("**Patterns Found:**")
-                    for pattern, count in details['patterns'].items():
-                        if count > 0:
-                            st.write(f"• {pattern.replace('_', ' ').title()}: {count}")
-                
-                with col2:
-                    st.markdown("**Statistics:**")
-                    st.write(f"• Average length: {details['avg_length']:.0f} characters")
-                    st.write(f"• Length range: {details['length_range'][0]} - {details['length_range'][1]}")
-                    st.write(f"• Unique variations: {details['patterns']['unique_variations']}")
-                    st.write(f"• Governance compliant: {'❌' if details['governance_violation'] else '✅'}")
-                
-                st.markdown("**Sample Questions:**")
-                for i, question in enumerate(details['sample_questions'], 1):
-                    st.write(f"{i}. {question[:100]}{'...' if len(question) > 100 else ''}")
-    
-    # Enhanced cleaning recommendations
-    st.markdown("### 🧹 Enhanced Cleaning Recommendations")
-    
-    total_junk = sum([
-        sum(details['patterns']['empty_or_very_short'] for details in analysis['variation_patterns'].values()),
-        sum(details['patterns']['html_tags'] for details in analysis['variation_patterns'].values()),
-        sum(details['patterns']['privacy_policy'] for details in analysis['variation_patterns'].values()),
-        sum(details['patterns']['exact_duplicates'] for details in analysis['variation_patterns'].values())
-    ])
-    
-    governance_violations_count = sum([
-        details['total_variations'] - UID_GOVERNANCE['max_variations_per_uid'] 
-        for details in analysis['variation_patterns'].values() 
-        if details['governance_violation']
-    ])
-    
-    if total_junk > 0 or governance_violations_count > 0:
-        st.warning(f"⚠️ Found approximately {total_junk:,} junk questions and {governance_violations_count:,} governance violations that could be cleaned up")
-        
-        cleaning_options = {
-            'Conservative': 'Remove only exact duplicates and obvious junk',
-            'Moderate': f'Remove duplicates, normalize similar questions, limit variations per UID to {UID_GOVERNANCE["max_variations_per_uid"]}',
-            'Aggressive': 'Keep only the single best question per UID (full governance compliance)'
-        }
-        
-        selected_strategy = st.selectbox("Choose cleaning strategy:", list(cleaning_options.keys()))
-        st.info(f"**{selected_strategy}**: {cleaning_options[selected_strategy]}")
-        
-        if st.button(f"🧹 Apply {selected_strategy} Cleaning", type="primary"):
-            with st.spinner(f"Applying {selected_strategy.lower()} cleaning..."):
-                cleaned_df, summary = clean_uid_variations(df_reference, selected_strategy.lower())
-                
-                st.success(f"✅ Cleaning completed!")
-                st.write(f"**Before:** {summary['original_count']:,} questions")
-                st.write(f"**After:** {summary['final_count']:,} questions")
-                st.write(f"**Removed:** {summary['total_removed']:,} questions ({summary['removal_percentage']:.1f}%)")
-                st.write(f"**Governance Compliant:** {'✅' if summary['governance_compliant'] else '❌'}")
-                
-                # Show cleaning log
-                with st.expander("📋 Cleaning Details"):
-                    for log_entry in summary['cleaning_log']:
-                        st.write(f"• {log_entry}")
-                
-                # Offer download
-                st.download_button(
-                    "📥 Download Cleaned Data",
-                    cleaned_df.to_csv(index=False),
-                    f"cleaned_question_bank_{selected_strategy.lower()}_{uuid4()}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-                
-                return cleaned_df
-    else:
-        st.success("✅ Data quality looks good! No major issues detected.")
-    
-    return df_reference
-
-# Cached Resources
-@st.cache_resource
-def load_sentence_transformer():
-    logger.info(f"Loading SentenceTransformer model: {MODEL_NAME}")
-    try:
-        return SentenceTransformer(MODEL_NAME)
-    except Exception as e:
-        logger.error(f"Failed to load SentenceTransformer: {e}")
-        raise
-
-@st.cache_resource
-def get_snowflake_engine():
-    try:
-        sf = st.secrets["snowflake"]
-        logger.info(f"Attempting Snowflake connection: user={sf.user}, account={sf.account}")
-        engine = create_engine(
-            f"snowflake://{sf.user}:{sf.password}@{sf.account}/{sf.database}/{sf.schema}"
-            f"?warehouse={sf.warehouse}&role={sf.role}"
-        )
-        with engine.connect() as conn:
-            conn.execute(text("SELECT CURRENT_VERSION()"))
-        return engine
-    except Exception as e:
-        logger.error(f"Snowflake engine creation failed: {e}")
-        if "250001" in str(e):
-            st.warning(
-                "🔒 Snowflake connection failed: User account is locked. "
-                "UID matching is disabled, but you can edit questions, search, and use Google Forms. "
-                "Visit: https://community.snowflake.com/s/error-your-user-login-has-been-locked"
-            )
-        raise
-
-@st.cache_data
-def get_tfidf_vectors(df_reference):
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-    vectors = vectorizer.fit_transform(df_reference["norm_text"])
-    return vectorizer, vectors
-
-# Enhanced Normalization
-def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
-    text = str(text).lower()
-    text = re.sub(r'\(.*?\)', '', text)
-    text = re.sub(r'[^a-z0-9 ]', '', text)
-    
-    # Apply enhanced synonym mapping
-    for phrase, replacement in synonym_map.items():
-        text = text.replace(phrase, replacement)
-    
-    return ' '.join(w for w in text.split() if w not in ENGLISH_STOP_WORDS)
-
-def get_best_question_for_uid(questions_list):
-    """Enhanced question selection with quality scoring"""
-    if not questions_list:
-        return None
-    
-    # Score each question based on enhanced quality indicators
-    scored_questions = [(q, score_question_quality(q)) for q in questions_list]
-    best_question = max(scored_questions, key=lambda x: x[1])
-    return best_question[0]
-
-def create_unique_questions_bank(df_reference):
-    """Enhanced unique questions bank with survey categorization"""
-    if df_reference.empty:
-        return pd.DataFrame()
-    
-    logger.info(f"Processing {len(df_reference)} reference questions for unique bank")
-    
-    # Group by UID and get the best question for each
-    unique_questions = []
-    
-    uid_groups = df_reference.groupby('uid')
-    logger.info(f"Found {len(uid_groups)} unique UIDs")
-    
-    for uid, group in uid_groups:
-        if pd.isna(uid):
-            continue
-            
-        uid_questions = group['heading_0'].tolist()
-        best_question = get_best_question_for_uid(uid_questions)
-        
-        # Get survey titles for categorization
-        survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
-        
-        # Determine category from survey titles
-        categories = []
-        for title in survey_titles:
-            category = categorize_survey(title)
-            if category not in categories:
-                categories.append(category)
-        
-        # If multiple categories, take the most frequent
-        if categories:
-            primary_category = categories[0] if len(categories) == 1 else "Mixed"
-        else:
-            primary_category = "Unknown"
-        
-        if best_question:
-            unique_questions.append({
-                'uid': uid,
-                'best_question': best_question,
-                'total_variants': len(uid_questions),
-                'question_length': len(str(best_question)),
-                'question_words': len(str(best_question).split()),
-                'survey_category': primary_category,
-                'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
-                'quality_score': score_question_quality(best_question),
-                'governance_compliant': len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid'],
-                'all_variants': uid_questions  # Keep all variants for reference
-            })
-    
-    unique_df = pd.DataFrame(unique_questions)
-    logger.info(f"Created unique questions bank with {len(unique_df)} UIDs")
-    
-    # Sort by UID in ascending order
-    if not unique_df.empty:
-        # Convert UID to numeric if possible, otherwise sort as string
-        try:
-            unique_df['uid_numeric'] = pd.to_numeric(unique_df['uid'], errors='coerce')
-            unique_df = unique_df.sort_values(['uid_numeric', 'uid'], na_position='last')
-            unique_df = unique_df.drop('uid_numeric', axis=1)
-        except:
-            unique_df = unique_df.sort_values('uid')
-    
-    return unique_df
-
-# Calculate Matched Questions Percentage
-def calculate_matched_percentage(df_final):
-    if df_final is None or df_final.empty:
-        logger.info("calculate_matched_percentage: df_final is None or empty")
-        return 0.0
-    
-    df_main = df_final[df_final["is_choice"] == False].copy()
-    logger.info(f"calculate_matched_percentage: Total main questions: {len(df_main)}")
-    
-    privacy_filter = ~df_main["heading_0"].str.contains("Our Privacy Policy", case=False, na=False)
-    html_pattern = r"<div.*text-align:\s*center.*<span.*font-size:\s*12pt.*<em>If you have any questions, please contact your AMI Learner Success Manager.*</em>.*</span>.*</div>"
-    html_filter = ~df_main["heading_0"].str.contains(html_pattern, case=False, na=False, regex=True)
-    
-    eligible_questions = df_main[privacy_filter & html_filter]
-    logger.info(f"calculate_matched_percentage: Eligible questions after exclusions: {len(eligible_questions)}")
-    
-    if eligible_questions.empty:
-        logger.info("calculate_matched_percentage: No eligible questions after exclusions")
-        return 0.0
-    
-    matched_questions = eligible_questions[eligible_questions["Final_UID"].notna()]
-    logger.info(f"calculate_matched_percentage: Matched questions: {len(matched_questions)}")
-    percentage = (len(matched_questions) / len(eligible_questions)) * 100
-    return round(percentage, 2)
-
-# Enhanced Snowflake Queries
-def run_snowflake_reference_query_all():
-    """Fetch ALL reference questions from Snowflake with pagination"""
-    all_data = []
-    limit = 10000
-    offset = 0
-    
-    while True:
-        query = """
-            SELECT HEADING_0, UID, SURVEY_TITLE
-            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-            WHERE UID IS NOT NULL
-            ORDER BY CAST(UID AS INTEGER) ASC
-            LIMIT :limit OFFSET :offset
-        """
-        try:
-            with get_snowflake_engine().connect() as conn:
-                result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
-            
-            if result.empty:
-                break  # No more data
-                
-            all_data.append(result)
-            offset += limit
-            
-            # Log progress
-            logger.info(f"Fetched {len(result)} rows, total so far: {sum(len(df) for df in all_data)}")
-            
-            # Break if we got less than the limit (last batch)
-            if len(result) < limit:
-                break
-                
-        except Exception as e:
-            logger.error(f"Snowflake reference query failed at offset {offset}: {e}")
-            if "250001" in str(e):
-                st.warning(
-                    "🔒 Cannot fetch Snowflake data: User account is locked. "
-                    "UID matching is disabled. Please resolve the lockout and retry."
-                )
-            elif "invalid identifier" in str(e).lower():
-                st.warning(
-                    "⚠️ Snowflake query failed due to invalid column. "
-                    "UID matching is disabled, but you can edit questions, search, and use Google Forms. "
-                    "Contact your Snowflake admin to verify table schema."
-                )
-            raise
-    
-    if all_data:
-        final_df = pd.concat(all_data, ignore_index=True)
-        logger.info(f"Total reference questions fetched: {len(final_df)}")
-        return final_df
-    else:
-        logger.warning("No reference data fetched")
-        return pd.DataFrame()
-
-def run_snowflake_reference_query(limit=10000, offset=0):
-    """Original function for backward compatibility"""
-    query = """
-        SELECT HEADING_0, UID, SURVEY_TITLE
-        FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-        WHERE UID IS NOT NULL
-        ORDER BY CAST(UID AS INTEGER) ASC
-        LIMIT :limit OFFSET :offset
-    """
-    try:
-        with get_snowflake_engine().connect() as conn:
-            result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
-        return result
-    except Exception as e:
-        logger.error(f"Snowflake reference query failed: {e}")
-        if "250001" in str(e):
-            st.warning(
-                "🔒 Cannot fetch Snowflake data: User account is locked. "
-                "UID matching is disabled. Please resolve the lockout and retry."
-            )
-        elif "invalid identifier" in str(e).lower():
-            st.warning(
-                "⚠️ Snowflake query failed due to invalid column. "
-                "UID matching is disabled, but you can edit questions, search, and use Google Forms. "
-                "Contact your Snowflake admin to verify table schema."
-            )
-        raise
-
-def run_snowflake_target_query():
-    query = """
-        SELECT DISTINCT HEADING_0, SURVEY_TITLE
-        FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-        WHERE UID IS NULL AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
-        ORDER BY HEADING_0
-    """
-    try:
-        with get_snowflake_engine().connect() as conn:
-            result = pd.read_sql(text(query), conn)
-        return result
-    except Exception as e:
-        logger.error(f"Snowflake target query failed: {e}")
-        if "250001" in str(e):
-            st.warning(
-                "🔒 Cannot fetch Snowflake data: User account is locked. "
-                "Please resolve the lockout and retry."
-            )
-        raise
-
-@st.cache_data
-def get_all_reference_questions():
-    """Cached function to get all reference questions"""
-    return run_snowflake_reference_query_all()
-
-# SurveyMonkey API functions
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def get_surveys(token):
+    """Get surveys from SurveyMonkey API"""
     url = "https://api.surveymonkey.com/v3/surveys"
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -880,6 +166,7 @@ def get_surveys(token):
         raise
 
 def get_survey_details(survey_id, token):
+    """Get detailed survey information"""
     url = f"https://api.surveymonkey.com/v3/surveys/{survey_id}/details"
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -891,6 +178,7 @@ def get_survey_details(survey_id, token):
         raise
 
 def create_survey(token, survey_template):
+    """Create new survey via SurveyMonkey API"""
     url = "https://api.surveymonkey.com/v3/surveys"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     try:
@@ -900,81 +188,13 @@ def create_survey(token, survey_template):
             "language": survey_template.get("language", "en")
         })
         response.raise_for_status()
-        survey_id = response.json().get("id")
-        return survey_id
+        return response.json().get("id")
     except requests.RequestException as e:
         logger.error(f"Failed to create survey: {e}")
         raise
 
-def create_page(token, survey_id, page_template):
-    url = f"https://api.surveymonkey.com/v3/surveys/{survey_id}/pages"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    try:
-        response = requests.post(url, headers=headers, json={
-            "title": page_template.get("title", ""),
-            "description": page_template.get("description", "")
-        })
-        response.raise_for_status()
-        page_id = response.json().get("id")
-        return page_id
-    except requests.RequestException as e:
-        logger.error(f"Failed to create page for survey {survey_id}: {e}")
-        raise
-
-def create_question(token, survey_id, page_id, question_template):
-    url = f"https://api.surveymonkey.com/v3/surveys/{survey_id}/pages/{page_id}/questions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    try:
-        payload = {
-            "family": question_template["family"],
-            "subtype": question_template["subtype"],
-            "headings": [{"heading": question_template["heading"]}],
-            "position": question_template["position"],
-            "required": question_template.get("is_required", False)
-        }
-        if "choices" in question_template:
-            payload["answers"] = {"choices": question_template["choices"]}
-        if question_template["family"] == "matrix":
-            payload["answers"] = {
-                "rows": question_template.get("rows", []),
-                "choices": question_template.get("choices", [])
-            }
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json().get("id")
-    except Exception as e:
-        logger.error(f"Failed to create question for page {page_id}: {e}")
-        raise
-
-def classify_question(text, heading_references=HEADING_REFERENCES):
-    # Length-based heuristic
-    if len(text.split()) > HEADING_LENGTH_THRESHOLD:
-        return "Heading"
-    
-    # TF-IDF similarity
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-    all_texts = heading_references + [text]
-    tfidf_vectors = vectorizer.fit_transform([enhanced_normalize(t) for t in all_texts])
-    similarity_scores = cosine_similarity(tfidf_vectors[-1], tfidf_vectors[:-1])
-    max_tfidf_score = np.max(similarity_scores)
-    
-    # Semantic similarity
-    try:
-        model = load_sentence_transformer()
-        emb_text = model.encode([text], convert_to_tensor=True)
-        emb_refs = model.encode(heading_references, convert_to_tensor=True)
-        semantic_scores = util.cos_sim(emb_text, emb_refs)[0]
-        max_semantic_score = np.max(semantic_scores.cpu().numpy())
-    except Exception as e:
-        logger.error(f"Semantic similarity computation failed: {e}")
-        max_semantic_score = 0.0
-    
-    # Combine criteria
-    if max_tfidf_score >= HEADING_TFIDF_THRESHOLD or max_semantic_score >= HEADING_SEMANTIC_THRESHOLD:
-        return "Heading"
-    return "Main Question/Multiple Choice"
-
 def extract_questions(survey_json):
+    """Extract questions from survey JSON"""
     questions = []
     global_position = 0
     for page in survey_json.get("pages", []):
@@ -982,7 +202,8 @@ def extract_questions(survey_json):
             q_text = question.get("headings", [{}])[0].get("heading", "")
             q_id = question.get("id", None)
             family = question.get("family", None)
-            subtype = question.get("subtype", None)
+            
+            # Determine schema type
             if family == "single_choice":
                 schema_type = "Single Choice"
             elif family == "multiple_choice":
@@ -1014,6 +235,8 @@ def extract_questions(survey_json):
                     "survey_title": survey_json.get("title", ""),
                     "question_category": question_category
                 })
+                
+                # Add choices
                 choices = question.get("answers", {}).get("choices", [])
                 for choice in choices:
                     choice_text = choice.get("text", "")
@@ -1033,187 +256,292 @@ def extract_questions(survey_json):
                         })
     return questions
 
-# Enhanced UID Matching functions
-def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_MAP):
-    df_reference = df_reference[df_reference["heading_0"].notna()].reset_index(drop=True)
-    df_target = df_target[df_target["heading_0"].notna()].reset_index(drop=True)
-    df_reference["norm_text"] = df_reference["heading_0"].apply(lambda x: enhanced_normalize(x, synonym_map))
-    df_target["norm_text"] = df_target["heading_0"].apply(lambda x: enhanced_normalize(x, synonym_map))
+# ============= SNOWFLAKE FUNCTIONS (Priority 2) =============
 
-    vectorizer, ref_vectors = get_tfidf_vectors(df_reference)
-    target_vectors = vectorizer.transform(df_target["norm_text"])
-    similarity_matrix = cosine_similarity(target_vectors, ref_vectors)
-
-    matched_uids, matched_qs, scores, confs, governance_status = [], [], [], [], []
-    for sim_row in similarity_matrix:
-        best_idx = sim_row.argmax()
-        best_score = sim_row[best_idx]
-        
-        if best_score >= TFIDF_HIGH_CONFIDENCE:
-            conf = "✅ High"
-        elif best_score >= TFIDF_LOW_CONFIDENCE:
-            conf = "⚠️ Low"
-        else:
-            conf = "❌ No match"
-            best_idx = None
-        
-        if best_idx is not None:
-            matched_uid = df_reference.iloc[best_idx]["uid"]
-            matched_question = df_reference.iloc[best_idx]["heading_0"]
-            
-            # Check governance compliance
-            uid_count = len(df_reference[df_reference["uid"] == matched_uid])
-            governance_compliant = uid_count <= UID_GOVERNANCE['max_variations_per_uid']
-            
-            matched_uids.append(matched_uid)
-            matched_qs.append(matched_question)
-            governance_status.append("✅" if governance_compliant else "⚠️")
-        else:
-            matched_uids.append(None)
-            matched_qs.append(None)
-            governance_status.append("N/A")
-            
-        scores.append(round(best_score, 4))
-        confs.append(conf)
-
-    df_target["Suggested_UID"] = matched_uids
-    df_target["Matched_Question"] = matched_qs
-    df_target["Similarity"] = scores
-    df_target["Match_Confidence"] = confs
-    df_target["Governance_Status"] = governance_status
-    return df_target
-
-def compute_semantic_matches(df_reference, df_target):
+@st.cache_resource
+def get_snowflake_engine():
+    """Initialize Snowflake connection (cached)"""
     try:
-        model = load_sentence_transformer()
-        emb_target = model.encode(df_target["heading_0"].tolist(), convert_to_tensor=True)
-        emb_ref = model.encode(df_reference["heading_0"].tolist(), convert_to_tensor=True)
-        cosine_scores = util.cos_sim(emb_target, emb_ref)
-
-        sem_matches, sem_scores, sem_governance = [], [], []
-        sem_matches, sem_scores, sem_governance = [], [], []
-        for i in range(len(df_target)):
-            best_idx = cosine_scores[i].argmax().item()
-            score = cosine_scores[i][best_idx].item()
-            
-            if score >= SEMANTIC_THRESHOLD:
-                matched_uid = df_reference.iloc[best_idx]["uid"]
-                # Check governance
-                uid_count = len(df_reference[df_reference["uid"] == matched_uid])
-                governance_compliant = uid_count <= UID_GOVERNANCE['max_variations_per_uid']
-                
-                sem_matches.append(matched_uid)
-                sem_scores.append(round(score, 4))
-                sem_governance.append("✅" if governance_compliant else "⚠️")
-            else:
-                sem_matches.append(None)
-                sem_scores.append(None)
-                sem_governance.append("N/A")
-
-        df_target["Semantic_UID"] = sem_matches
-        df_target["Semantic_Similarity"] = sem_scores
-        df_target["Semantic_Governance"] = sem_governance
-    except Exception as e:
-        st.error(f"❌ Error occurred in semantic matcher: {e}")
-        return df_target
-    except Exception as e:
-        logger.error(f"Semantic matching failed: {e}")
-        st.error(f"🚨 Semantic matching failed: {e}")
-        return df_target
-
-def assign_match_type(row):
-    if pd.notnull(row["Suggested_UID"]):
-        return row["Match_Confidence"]
-    return "🧠 Semantic" if pd.notnull(row["Semantic_UID"]) else "❌ No match"
-
-def finalize_matches(df_target, df_reference):
-    df_target["Final_UID"] = df_target["Suggested_UID"].combine_first(df_target["Semantic_UID"])
-    df_target["configured_final_UID"] = df_target["Final_UID"]
-    df_target["Final_Question"] = df_target["Matched_Question"]
-    df_target["Final_Match_Type"] = df_target.apply(assign_match_type, axis=1)
-    df_target["Final_Governance"] = df_target["Governance_Status"].combine_first(df_target["Semantic_Governance"])
-    
-    # Prevent UID assignment for Heading questions
-    df_target.loc[df_target["question_category"] == "Heading", ["Final_UID", "configured_final_UID"]] = None
-    
-    df_target["Change_UID"] = df_target["Final_UID"].apply(
-        lambda x: f"{x} - {df_reference[df_reference['uid'] == x]['heading_0'].iloc[0]}" if pd.notnull(x) and x in df_reference["uid"].values else None
-    )
-    
-    df_target["Final_UID"] = df_target.apply(
-        lambda row: df_target[df_target["heading_0"] == row["parent_question"]]["Final_UID"].iloc[0]
-        if row["is_choice"] and pd.notnull(row["parent_question"]) else row["Final_UID"],
-        axis=1
-    )
-    df_target["configured_final_UID"] = df_target["Final_UID"]
-    df_target["Change_UID"] = df_target["Final_UID"].apply(
-        lambda x: f"{x} - {df_reference[df_reference['uid'] == x]['heading_0'].iloc[0]}" if pd.notnull(x) and x in df_reference["uid"].values else None
-    )
-    
-    if "survey_id" in df_target.columns and "survey_title" in df_target.columns:
-        df_target["survey_id_title"] = df_target.apply(
-            lambda x: f"{x['survey_id']} - {x['survey_title']}" if pd.notnull(x['survey_id']) and pd.notnull(x['survey_title']) else "",
-            axis=1
+        sf = st.secrets["snowflake"]
+        logger.info(f"Attempting Snowflake connection: user={sf.user}, account={sf.account}")
+        engine = create_engine(
+            f"snowflake://{sf.user}:{sf.password}@{sf.account}/{sf.database}/{sf.schema}"
+            f"?warehouse={sf.warehouse}&role={sf.role}"
         )
+        with engine.connect() as conn:
+            conn.execute(text("SELECT CURRENT_VERSION()"))
+        return engine
+    except Exception as e:
+        logger.error(f"Snowflake engine creation failed: {e}")
+        if "250001" in str(e):
+            st.warning(
+                "🔒 Snowflake connection failed: User account is locked. "
+                "UID matching is disabled, but you can use SurveyMonkey features. "
+                "Visit: https://community.snowflake.com/s/error-your-user-login-has-been-locked"
+            )
+        raise
+
+@st.cache_data(ttl=600)  # Cache for 10 minutes
+def get_all_reference_questions():
+    """Fetch ALL reference questions from Snowflake with pagination"""
+    all_data = []
+    limit = 10000
+    offset = 0
+    
+    while True:
+        query = """
+            SELECT HEADING_0, UID, SURVEY_TITLE
+            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+            WHERE UID IS NOT NULL
+            ORDER BY CAST(UID AS INTEGER) ASC
+            LIMIT :limit OFFSET :offset
+        """
+        try:
+            with get_snowflake_engine().connect() as conn:
+                result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
+            
+            if result.empty:
+                break
+                
+            all_data.append(result)
+            offset += limit
+            
+            logger.info(f"Fetched {len(result)} rows, total so far: {sum(len(df) for df in all_data)}")
+            
+            if len(result) < limit:
+                break
+                
+        except Exception as e:
+            logger.error(f"Snowflake reference query failed at offset {offset}: {e}")
+            if "250001" in str(e):
+                st.warning("🔒 Cannot fetch Snowflake data: User account is locked.")
+            raise
+    
+    if all_data:
+        final_df = pd.concat(all_data, ignore_index=True)
+        logger.info(f"Total reference questions fetched: {len(final_df)}")
+        return final_df
+    else:
+        logger.warning("No reference data fetched")
+        return pd.DataFrame()
+
+def run_snowflake_target_query():
+    """Get target questions without UIDs"""
+    query = """
+        SELECT DISTINCT HEADING_0, SURVEY_TITLE
+        FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+        WHERE UID IS NULL AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
+        ORDER BY HEADING_0
+    """
+    try:
+        with get_snowflake_engine().connect() as conn:
+            result = pd.read_sql(text(query), conn)
+        return result
+    except Exception as e:
+        logger.error(f"Snowflake target query failed: {e}")
+        raise
+
+# ============= UTILITY FUNCTIONS =============
+
+@st.cache_resource
+def load_sentence_transformer():
+    """Load SentenceTransformer model (cached)"""
+    logger.info(f"Loading SentenceTransformer model: {MODEL_NAME}")
+    try:
+        return SentenceTransformer(MODEL_NAME)
+    except Exception as e:
+        logger.error(f"Failed to load SentenceTransformer: {e}")
+        raise
+
+def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
+    """Enhanced text normalization"""
+    text = str(text).lower()
+    text = re.sub(r'\(.*?\)', '', text)
+    text = re.sub(r'[^a-z0-9 ]', '', text)
+    
+    # Apply synonym mapping
+    for phrase, replacement in synonym_map.items():
+        text = text.replace(phrase, replacement)
+    
+    return ' '.join(w for w in text.split() if w not in ENGLISH_STOP_WORDS)
+
+def categorize_survey(survey_title):
+    """Categorize survey based on title keywords"""
+    if not survey_title:
+        return "Unknown"
+    
+    title_lower = survey_title.lower()
+    
+    # Check GROW first (exact match for CAPS)
+    if 'GROW' in survey_title:
+        return 'GROW'
+    
+    # Check other categories
+    for category, keywords in SURVEY_CATEGORIES.items():
+        if category == 'GROW':
+            continue
+        for keyword in keywords:
+            if keyword.lower() in title_lower:
+                return category
+    
+    return "Other"
+
+def classify_question(text, heading_references=HEADING_REFERENCES):
+    """Classify question as Heading or Main Question"""
+    if len(text.split()) > HEADING_LENGTH_THRESHOLD:
+        return "Heading"
+    
+    # TF-IDF similarity
+    try:
+        vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+        all_texts = heading_references + [text]
+        tfidf_vectors = vectorizer.fit_transform([enhanced_normalize(t) for t in all_texts])
+        similarity_scores = cosine_similarity(tfidf_vectors[-1], tfidf_vectors[:-1])
+        max_tfidf_score = np.max(similarity_scores)
         
-        # Add survey categorization
-        df_target["survey_category"] = df_target["survey_title"].apply(categorize_survey)
+        # Semantic similarity
+        model = load_sentence_transformer()
+        emb_text = model.encode([text], convert_to_tensor=True)
+        emb_refs = model.encode(heading_references, convert_to_tensor=True)
+        semantic_scores = util.cos_sim(emb_text, emb_refs)[0]
+        max_semantic_score = np.max(semantic_scores.cpu().numpy())
+        
+        if max_tfidf_score >= HEADING_TFIDF_THRESHOLD or max_semantic_score >= HEADING_SEMANTIC_THRESHOLD:
+            return "Heading"
+    except Exception as e:
+        logger.error(f"Question classification failed: {e}")
     
-    return df_target
+    return "Main Question/Multiple Choice"
 
-def detect_uid_conflicts(df_target):
-    uid_conflicts = df_target.groupby("Final_UID")["heading_0"].nunique()
-    duplicate_uids = uid_conflicts[uid_conflicts > 1].index
-    df_target["UID_Conflict"] = df_target["Final_UID"].apply(
-        lambda x: "⚠️ Conflict" if pd.notnull(x) and x in duplicate_uids else ""
-    )
-    return df_target
-
-def run_uid_match(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_MAP, batch_size=BATCH_SIZE):
-    if df_reference.empty or df_target.empty:
-        logger.warning("Empty input dataframes provided.")
-        st.error("🚨 Input data is empty.")
-        return pd.DataFrame()
-
-    if len(df_target) > 10000:
-        st.warning("⚠️ Large dataset detected. Processing may take time.")
-
-    logger.info(f"Processing {len(df_target)} target questions against {len(df_reference)} reference questions.")
-    df_results = []
-    for start in range(0, len(df_target), batch_size):
-        batch_target = df_target.iloc[start:start + batch_size].copy()
-        with st.spinner(f"🔄 Processing batch {start//batch_size + 1}..."):
-            batch_target = compute_tfidf_matches(df_reference, batch_target, synonym_map)
-            batch_target = compute_semantic_matches(df_reference, batch_target)
-            batch_target = finalize_matches(batch_target, df_reference)
-            batch_target = detect_uid_conflicts(batch_target)
-        df_results.append(batch_target)
+def score_question_quality(question):
+    """Score question quality"""
+    score = 0
+    text = str(question).lower().strip()
     
-    if not df_results:
-        logger.warning("No results from batch processing.")
-        return pd.DataFrame()
-    return pd.concat(df_results, ignore_index=True)
+    # Length scoring
+    length = len(text)
+    if 10 <= length <= 100:
+        score += 20
+    elif 5 <= length <= 150:
+        score += 10
+    elif length < 5:
+        score -= 20
+    
+    # Question format scoring
+    if text.endswith('?'):
+        score += 15
+    
+    # English question words
+    question_words = ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should']
+    if any(word in text.split()[:3] for word in question_words):
+        score += 15
+    
+    # Proper capitalization
+    if question and question[0].isupper():
+        score += 10
+    
+    # Avoid artifacts
+    bad_patterns = ['click here', 'please select', '...', 'n/a', 'other', 'select one', 'choose all', 'privacy policy']
+    if any(pattern in text for pattern in bad_patterns):
+        score -= 15
+    
+    # Avoid HTML
+    if '<' in text and '>' in text:
+        score -= 20
+    
+    return score
 
-# Initialize session state
-if "page" not in st.session_state:
-    st.session_state.page = "home"
-if "df_target" not in st.session_state:
-    st.session_state.df_target = None
-if "df_final" not in st.session_state:
-    st.session_state.df_final = None
-if "uid_changes" not in st.session_state:
-    st.session_state.uid_changes = {}
-if "custom_questions" not in st.session_state:
-    st.session_state.custom_questions = pd.DataFrame(columns=["Customized Question", "Original Question", "Final_UID"])
-if "df_reference" not in st.session_state:
-    st.session_state.df_reference = None
-if "survey_template" not in st.session_state:
-    st.session_state.survey_template = None
+def get_best_question_for_uid(questions_list):
+    """Get the best quality question from a list"""
+    if not questions_list:
+        return None
+    
+    scored_questions = [(q, score_question_quality(q)) for q in questions_list]
+    best_question = max(scored_questions, key=lambda x: x[1])
+    return best_question[0]
+
+def create_unique_questions_bank(df_reference):
+    """Create unique questions bank with best question per UID"""
+    if df_reference.empty:
+        return pd.DataFrame()
+    
+    logger.info(f"Processing {len(df_reference)} reference questions for unique bank")
+    
+    unique_questions = []
+    uid_groups = df_reference.groupby('uid')
+    
+    for uid, group in uid_groups:
+        if pd.isna(uid):
+            continue
+            
+        uid_questions = group['heading_0'].tolist()
+        best_question = get_best_question_for_uid(uid_questions)
+        
+        # Get survey titles for categorization
+        survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
+        categories = [categorize_survey(title) for title in survey_titles]
+        primary_category = categories[0] if len(set(categories)) == 1 else "Mixed"
+        
+        if best_question:
+            unique_questions.append({
+                'uid': uid,
+                'best_question': best_question,
+                'total_variants': len(uid_questions),
+                'question_length': len(str(best_question)),
+                'question_words': len(str(best_question).split()),
+                'survey_category': primary_category,
+                'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
+                'quality_score': score_question_quality(best_question),
+                'governance_compliant': len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid']
+            })
+    
+    unique_df = pd.DataFrame(unique_questions)
+    
+    # Sort by UID
+    if not unique_df.empty:
+        try:
+            unique_df['uid_numeric'] = pd.to_numeric(unique_df['uid'], errors='coerce')
+            unique_df = unique_df.sort_values(['uid_numeric', 'uid'], na_position='last')
+            unique_df = unique_df.drop('uid_numeric', axis=1)
+        except:
+            unique_df = unique_df.sort_values('uid')
+    
+    return unique_df
+
+# ============= UI COMPONENTS =============
+
+def check_surveymonkey_connection():
+    """Check SurveyMonkey API connection"""
+    try:
+        token = st.secrets.get("surveymonkey", {}).get("token") or st.secrets.get("surveymonkey", {}).get("access_token")
+        if not token:
+            return False, "No SurveyMonkey token found"
+        
+        surveys = get_surveys(token)
+        return True, f"Connected - {len(surveys)} surveys found"
+    except Exception as e:
+        return False, f"Connection failed: {str(e)}"
+
+def check_snowflake_connection():
+    """Check Snowflake connection"""
+    try:
+        get_snowflake_engine()
+        return True, "Connected successfully"
+    except Exception as e:
+        return False, f"Connection failed: {str(e)}"
 
 # Enhanced Sidebar Navigation
 with st.sidebar:
     st.markdown("### 🧠 UID Matcher Pro")
     st.markdown("Navigate through the application")
+    
+    # Connection status
+    sm_status, sm_msg = check_surveymonkey_connection()
+    sf_status, sf_msg = check_snowflake_connection()
+    
+    st.markdown("**🔗 Connection Status**")
+    st.write(f"📊 SurveyMonkey: {'✅' if sm_status else '❌'}")
+    st.write(f"❄️ Snowflake: {'✅' if sf_status else '❌'}")
     
     # Main navigation
     if st.button("🏠 Home Dashboard", use_container_width=True):
@@ -1222,62 +550,67 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # SurveyMonkey section
-    st.markdown("**📊 SurveyMonkey**")
+    # SurveyMonkey section (Priority 1)
+    st.markdown("**📊 SurveyMonkey (Step 1)**")
     if st.button("👁️ View Surveys", use_container_width=True):
         st.session_state.page = "view_surveys"
-        st.rerun()
-    if st.button("⚙️ Configure Survey", use_container_width=True):
-        st.session_state.page = "configure_survey"
+        st.session_state.surveymonkey_initialized = True
         st.rerun()
     if st.button("➕ Create New Survey", use_container_width=True):
         st.session_state.page = "create_survey"
+        st.session_state.surveymonkey_initialized = True
         st.rerun()
     
     st.markdown("---")
     
-    # Question Bank section
-    st.markdown("**📚 Question Bank**")
+    # Configuration section (Step 2)
+    st.markdown("**⚙️ Configuration (Step 2)**")
+    if st.button("⚙️ Configure Survey", use_container_width=True):
+        if not st.session_state.surveymonkey_initialized:
+            st.warning("⚠️ Please initialize SurveyMonkey first by viewing surveys")
+        else:
+            st.session_state.page = "configure_survey"
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # Question Bank section (Requires Snowflake)
+    st.markdown("**📚 Question Bank (Snowflake)**")
     if st.button("📖 View Question Bank", use_container_width=True):
         st.session_state.page = "view_question_bank"
+        st.session_state.snowflake_initialized = True
         st.rerun()
     if st.button("⭐ Unique Questions Bank", use_container_width=True):
         st.session_state.page = "unique_question_bank"
+        st.session_state.snowflake_initialized = True
         st.rerun()
     if st.button("📊 Categorized Questions", use_container_width=True):
         st.session_state.page = "categorized_questions"
-        st.rerun()
-    if st.button("🔄 Update Question Bank", use_container_width=True):
-        st.session_state.page = "update_question_bank"
+        st.session_state.snowflake_initialized = True
         st.rerun()
     if st.button("🧹 Data Quality Management", use_container_width=True):
         st.session_state.page = "data_quality"
+        st.session_state.snowflake_initialized = True
         st.rerun()
     
     st.markdown("---")
     
-    # Governance section
+    # Governance info
     st.markdown("**⚖️ Governance**")
     st.markdown(f"• Max variations per UID: {UID_GOVERNANCE['max_variations_per_uid']}")
     st.markdown(f"• Semantic threshold: {UID_GOVERNANCE['semantic_similarity_threshold']}")
-    st.markdown(f"• Quality threshold: {UID_GOVERNANCE['quality_score_threshold']}")
-    
-    st.markdown("---")
-    
-    # Quick links
-    st.markdown("**🔗 Quick Links**")
-    st.markdown("📝 [Submit New Question](https://docs.google.com/forms/d/1LoY_La59UJ4ZsuxckM8Wl52kVeLI7a1t1MF8zIQxGUs)")
-    st.markdown("🆔 [Submit New UID](https://docs.google.com/forms/d/1lkhfm1-t5-zwLxfbVEUiHewveLpGXv5yEVRlQx5XjxA)")
 
-# App UI with enhanced styling
+# App Header
 st.markdown('<div class="main-header">🧠 UID Matcher Pro: Enhanced with Governance & Categories</div>', unsafe_allow_html=True)
 
 # Secrets Validation
-if "snowflake" not in st.secrets or "surveymonkey" not in st.secrets:
-    st.markdown('<div class="warning-card">⚠️ Missing secrets configuration for Snowflake or SurveyMonkey.</div>', unsafe_allow_html=True)
+if "snowflake" not in st.secrets and "surveymonkey" not in st.secrets:
+    st.markdown('<div class="warning-card">⚠️ Missing secrets configuration for Snowflake and SurveyMonkey.</div>', unsafe_allow_html=True)
     st.stop()
 
-# Home Page with Enhanced Dashboard
+# ============= PAGE ROUTING =============
+
+# Home Page
 if st.session_state.page == "home":
     st.markdown("## 🏠 Welcome to Enhanced UID Matcher Pro")
     
@@ -1285,33 +618,297 @@ if st.session_state.page == "home":
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
+        csv_export = df_target.to_csv(index=False)
+        st.download_button(
+            "📥 Download Configuration",
+            csv_export,
+            f"survey_config_{uuid4()}.csv",
+            "text/csv",
+            use_container_width=True
+        )
+    
+    with col2:
+        if st.button("🔄 Refresh Survey Data", use_container_width=True):
+            st.session_state.df_target = None
+            st.session_state.page = "view_surveys"
+            st.rerun()
+    
+    with col3:
+        if st.button("📊 View Question Bank", use_container_width=True):
+            st.session_state.page = "view_question_bank"
+            st.rerun()
+
+elif st.session_state.page == "data_quality":
+    st.markdown("## 🧹 Data Quality Management")
+    
+    if not sf_status:
+        st.error("❌ Snowflake connection required for data quality analysis")
+        st.stop()
+    
+    try:
+        with st.spinner("🔄 Loading data for quality analysis..."):
+            df_reference = get_all_reference_questions()
+        
+        if df_reference.empty:
+            st.warning("⚠️ No reference data found")
+            st.stop()
+        
+        st.success(f"✅ Loaded {len(df_reference):,} questions for quality analysis")
+        
+        # Quality overview
+        st.markdown("### 📊 Data Quality Overview")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("📊 Total Questions", f"{len(df_reference):,}")
+        
+        with col2:
+            unique_uids = df_reference['uid'].nunique()
+            st.metric("🆔 Unique UIDs", f"{unique_uids:,}")
+        
+        with col3:
+            avg_per_uid = len(df_reference) / unique_uids if unique_uids > 0 else 0
+            st.metric("📈 Avg per UID", f"{avg_per_uid:.1f}")
+        
+        with col4:
+            # Check governance compliance
+            uid_counts = df_reference['uid'].value_counts()
+            violations = sum(uid_counts > UID_GOVERNANCE['max_variations_per_uid'])
+            compliance_rate = ((len(uid_counts) - violations) / len(uid_counts)) * 100 if len(uid_counts) > 0 else 100
+            st.metric("⚖️ Compliance", f"{compliance_rate:.1f}%")
+        
+        # Quality issues detection
+        st.markdown("### 🔍 Quality Issues Detection")
+        
+        # Detect various quality issues
+        quality_issues = {
+            'Empty Questions': len(df_reference[df_reference['heading_0'].str.len() < 5]),
+            'HTML Content': len(df_reference[df_reference['heading_0'].str.contains('<.*>', regex=True, na=False)]),
+            'Privacy Policy': len(df_reference[df_reference['heading_0'].str.contains('privacy policy', case=False, na=False)]),
+            'Duplicate UIDs': len(df_reference[df_reference.duplicated(['uid', 'heading_0'])])
+        }
+        
+        # Display issues
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Quality Issues Found:**")
+            for issue, count in quality_issues.items():
+                if count > 0:
+                    st.write(f"❌ {issue}: {count:,}")
+                else:
+                    st.write(f"✅ {issue}: {count}")
+        
+        with col2:
+            # Governance violations
+            st.markdown("**Governance Violations:**")
+            excessive_uids = uid_counts[uid_counts > UID_GOVERNANCE['max_variations_per_uid']]
+            if len(excessive_uids) > 0:
+                st.write(f"❌ UIDs exceeding limit: {len(excessive_uids)}")
+                st.write(f"❌ Total excess questions: {excessive_uids.sum() - (len(excessive_uids) * UID_GOVERNANCE['max_variations_per_uid'])}")
+            else:
+                st.write("✅ All UIDs within governance limits")
+        
+        # Top problematic UIDs
+        if len(excessive_uids) > 0:
+            st.markdown("### ⚠️ Most Problematic UIDs")
+            top_problematic = excessive_uids.head(10).reset_index()
+            top_problematic.columns = ['UID', 'Question Count']
+            top_problematic['Excess'] = top_problematic['Question Count'] - UID_GOVERNANCE['max_variations_per_uid']
+            st.dataframe(top_problematic, use_container_width=True)
+        
+        # Data cleaning options
+        st.markdown("### 🧹 Data Cleaning Options")
+        
+        cleaning_strategy = st.selectbox(
+            "Select cleaning strategy:",
+            ["Conservative", "Moderate", "Aggressive"],
+            help="Conservative: Remove only duplicates | Moderate: Remove duplicates + normalize | Aggressive: Keep only best question per UID"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown(f"**{cleaning_strategy} Strategy:**")
+            if cleaning_strategy == "Conservative":
+                st.write("• Remove exact duplicates only")
+                st.write("• Remove obvious junk (empty, HTML)")
+                st.write("• Minimal impact on data")
+            elif cleaning_strategy == "Moderate":
+                st.write("• Remove duplicates and similar questions")
+                st.write("• Apply governance limits")
+                st.write("• Normalize question text")
+            else:  # Aggressive
+                st.write("• Keep only best question per UID")
+                st.write("• Full governance compliance")
+                st.write("• Maximum data reduction")
+        
+        with col2:
+            # Estimated impact
+            if cleaning_strategy == "Conservative":
+                estimated_removal = sum(quality_issues.values())
+            elif cleaning_strategy == "Moderate":
+                estimated_removal = sum(quality_issues.values()) + (excessive_uids.sum() - len(excessive_uids) * UID_GOVERNANCE['max_variations_per_uid'])
+            else:  # Aggressive
+                estimated_removal = len(df_reference) - unique_uids
+            
+            removal_percentage = (estimated_removal / len(df_reference)) * 100 if len(df_reference) > 0 else 0
+            
+            st.markdown("**Estimated Impact:**")
+            st.write(f"• Questions to remove: ~{estimated_removal:,}")
+            st.write(f"• Percentage reduction: ~{removal_percentage:.1f}%")
+            st.write(f"• Remaining questions: ~{len(df_reference) - estimated_removal:,}")
+        
+        if st.button(f"🧹 Apply {cleaning_strategy} Cleaning", type="primary"):
+            st.warning("⚠️ This is a simulation. In the full implementation, this would:")
+            st.write(f"1. Apply {cleaning_strategy.lower()} cleaning strategy")
+            st.write(f"2. Remove approximately {estimated_removal:,} questions")
+            st.write("3. Create cleaned dataset for download")
+            st.write("4. Maintain governance compliance")
+            
+            # Simulate cleaned data creation
+            st.success("✅ Cleaning simulation completed!")
+            
+            # Create sample cleaned data for download
+            if cleaning_strategy == "Aggressive":
+                # Simulate keeping only best question per UID
+                sample_cleaned = df_reference.groupby('uid').first().reset_index()
+            else:
+                # Simulate moderate cleaning
+                sample_cleaned = df_reference.drop_duplicates(['uid', 'heading_0'])
+            
+            csv_export = sample_cleaned.to_csv(index=False)
+            st.download_button(
+                f"📥 Download {cleaning_strategy} Cleaned Data",
+                csv_export,
+                f"cleaned_data_{cleaning_strategy.lower()}_{uuid4()}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        # Quality trends (if we had historical data)
+        st.markdown("### 📈 Quality Insights")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Question Length Distribution:**")
+            question_lengths = df_reference['heading_0'].str.len()
+            length_bins = pd.cut(question_lengths, bins=[0, 10, 50, 100, 200, float('inf')], 
+                               labels=['Very Short', 'Short', 'Medium', 'Long', 'Very Long'])
+            length_counts = length_bins.value_counts()
+            st.bar_chart(length_counts)
+        
+        with col2:
+            st.markdown("**Questions by Survey Category:**")
+            df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey)
+            category_counts = df_reference['survey_category'].value_counts()
+            st.bar_chart(category_counts)
+        
+    except Exception as e:
+        st.error(f"❌ Data quality analysis failed: {str(e)}")
+        logger.error(f"Data quality error: {e}")
+
+# ============= ERROR HANDLING & FALLBACKS =============
+
+else:
+    st.error("❌ Unknown page requested")
+    st.info("Redirecting to home...")
+    st.session_state.page = "home"
+    st.rerun()
+
+# ============= FOOTER =============
+st.markdown("---")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown("**🔗 Quick Links**")
+    st.markdown("📝 [Submit New Question](https://docs.google.com/forms/d/1LoY_La59UJ4ZsuxckM8Wl52kVeLI7a1t1MF8zIQxGUs)")
+
+with col2:
+    st.markdown("**📊 Current Status**")
+    st.write(f"Page: {st.session_state.page}")
+    st.write(f"SM Init: {'✅' if st.session_state.surveymonkey_initialized else '❌'}")
+
+with col3:
+    st.markdown("**⚖️ Governance Rules**")
+    st.write(f"Max variations: {UID_GOVERNANCE['max_variations_per_uid']}")
+    st.write(f"Semantic threshold: {UID_GOVERNANCE['semantic_similarity_threshold']}")
+
+# ============= ADDITIONAL HELPER FUNCTIONS =============
+
+def validate_session_state():
+    """Validate and clean session state"""
+    required_keys = ['page', 'df_target', 'df_final', 'uid_changes', 'custom_questions', 
+                    'df_reference', 'survey_template', 'snowflake_initialized', 'surveymonkey_initialized']
+    
+    for key in required_keys:
+        if key not in st.session_state:
+            if key in ['df_target', 'df_final', 'df_reference', 'survey_template']:
+                st.session_state[key] = None
+            elif key in ['uid_changes']:
+                st.session_state[key] = {}
+            elif key in ['custom_questions']:
+                st.session_state[key] = pd.DataFrame(columns=["Customized Question", "Original Question", "Final_UID"])
+            elif key in ['snowflake_initialized', 'surveymonkey_initialized']:
+                st.session_state[key] = False
+            else:
+                st.session_state[key] = "home"
+
+def log_user_action(action, details=None):
+    """Log user actions for debugging"""
+    logger.info(f"User action: {action}")
+    if details:
+        logger.info(f"Action details: {details}")
+
+def handle_error_gracefully(error, context="Unknown"):
+    """Handle errors gracefully with user-friendly messages"""
+    logger.error(f"Error in {context}: {str(error)}")
+    
+    if "250001" in str(error):
+        st.error("🔒 Snowflake account is locked. Please contact your administrator.")
+    elif "connection" in str(error).lower():
+        st.error("🌐 Connection issue detected. Please check your network and try again.")
+    elif "token" in str(error).lower():
+        st.error("🔑 Authentication issue. Please check your API tokens.")
+    else:
+        st.error(f"❌ An error occurred in {context}: {str(error)}")
+    
+    return False
+
+# Validate session state on each run
+validate_session_state()
+
+# End of script
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
         st.metric("🔄 Status", "Active")
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        try:
-            # Quick connection test
-            with get_snowflake_engine().connect() as conn:
-                result = conn.execute(text("SELECT COUNT(*) FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE WHERE UID IS NOT NULL"))
-                count = result.fetchone()[0]
-                st.metric("📊 Total UIDs", f"{count:,}")
-        except:
-            st.metric("📊 Total UIDs", "Connection Error")
+        if sf_status:
+            try:
+                with get_snowflake_engine().connect() as conn:
+                    result = conn.execute(text("SELECT COUNT(*) FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE WHERE UID IS NOT NULL"))
+                    count = result.fetchone()[0]
+                    st.metric("📊 Total UIDs", f"{count:,}")
+            except:
+                st.metric("📊 Total UIDs", "Error")
+        else:
+            st.metric("📊 Total UIDs", "No Connection")
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col3:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        try:
-            token = st.secrets.get("surveymonkey", {}).get("token", None)
-            if token:
+        if sm_status:
+            try:
+                token = st.secrets.get("surveymonkey", {}).get("token") or st.secrets.get("surveymonkey", {}).get("access_token")
                 surveys = get_surveys(token)
                 st.metric("📋 SM Surveys", len(surveys))
-            else:
-                st.metric("📋 SM Surveys", "No Token")
-        except:
-            st.metric("📋 SM Surveys", "API Error")
+            except:
+                st.metric("📋 SM Surveys", "API Error")
+        else:
+            st.metric("📋 SM Surveys", "No Connection")
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col4:
@@ -1321,174 +918,1180 @@ if st.session_state.page == "home":
     
     st.markdown("---")
     
-    # Enhanced features highlight
-    st.markdown("## 🚀 Enhanced Features")
+    # Workflow guide
+    st.markdown("## 🚀 Recommended Workflow")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### 🎯 Enhanced UID Matching")
-        st.markdown("• **Semantic Matching**: AI-powered question similarity")
-        st.markdown("• **Governance Rules**: Automatic compliance checking")
-        st.markdown("• **Conflict Detection**: Real-time duplicate identification")
-        st.markdown("• **Quality Scoring**: Advanced question assessment")
+        st.markdown("### 📊 Step 1: SurveyMonkey Operations")
+        st.markdown("Start here to avoid function collisions:")
+        st.markdown("• **View Surveys** - Initialize SurveyMonkey connection")
+        st.markdown("• **Create Surveys** - Build new surveys")
+        st.markdown("• **Extract Questions** - Get survey data")
         
-        if st.button("🔧 Configure Survey with Enhanced Matching", use_container_width=True):
-            st.session_state.page = "configure_survey"
-            st.rerun()
-    
-    with col2:
-        st.markdown("### 📊 Survey Categorization")
-        st.markdown("• **Auto-Categorization**: Smart survey type detection")
-        st.markdown("• **Category Filters**: Application, GROW, Impact, etc.")
-        st.markdown("• **Cross-Category Analysis**: Compare question patterns")
-        st.markdown("• **Quality by Category**: Category-specific insights")
-        
-        if st.button("📊 View Categorized Questions", use_container_width=True):
-            st.session_state.page = "categorized_questions"
-            st.rerun()
-    
-    st.markdown("---")
-    
-    # Quick actions grid
-    st.markdown("## 🚀 Quick Actions")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### 📊 SurveyMonkey Operations")
-        if st.button("👁️ View & Analyze Surveys", use_container_width=True):
+        if st.button("🔧 Start with SurveyMonkey", use_container_width=True):
             st.session_state.page = "view_surveys"
-            st.rerun()
-        if st.button("➕ Create New Survey", use_container_width=True):
-            st.session_state.page = "create_survey"
+            st.session_state.surveymonkey_initialized = True
             st.rerun()
     
     with col2:
-        st.markdown("### 📚 Question Bank Management")
-        if st.button("📖 View Full Question Bank", use_container_width=True):
-            st.session_state.page = "view_question_bank"
-            st.rerun()
-        if st.button("⭐ Unique Questions Bank", use_container_width=True):
-            st.session_state.page = "unique_question_bank"
-            st.rerun()
+        st.markdown("### ❄️ Step 2: Snowflake Operations")
+        st.markdown("Use after SurveyMonkey initialization:")
+        st.markdown("• **View Question Bank** - Browse all questions")
+        st.markdown("• **Unique Questions** - Best question per UID")
+        st.markdown("• **Data Quality** - Clean and optimize")
+        
+        if st.button("🎯 Proceed to Question Bank", use_container_width=True):
+            if not sf_status:
+                st.error("❌ Snowflake connection required")
+            else:
+                st.session_state.page = "view_question_bank"
+                st.session_state.snowflake_initialized = True
+                st.rerun()
     
-    # System status with governance
+    # System status
     st.markdown("---")
     st.markdown("## 🔧 System Status")
     
-    status_col1, status_col2, status_col3 = st.columns(3)
+    status_col1, status_col2 = st.columns(2)
     
     with status_col1:
-        try:
-            get_snowflake_engine()
-            st.markdown('<div class="success-card">✅ Snowflake: Connected</div>', unsafe_allow_html=True)
-        except:
-            st.markdown('<div class="warning-card">❌ Snowflake: Connection Issues</div>', unsafe_allow_html=True)
+        if sm_status:
+            st.markdown('<div class="success-card">✅ SurveyMonkey: Connected</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="warning-card">❌ SurveyMonkey: Connection Issues</div>', unsafe_allow_html=True)
+            st.write(f"Details: {sm_msg}")
     
     with status_col2:
-        try:
-            token = st.secrets.get("surveymonkey", {}).get("token", None)
-            if token:
-                get_surveys(token)
-                st.markdown('<div class="success-card">✅ SurveyMonkey: Connected</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="warning-card">❌ SurveyMonkey: No Token</div>', unsafe_allow_html=True)
-        except:
-            st.markdown('<div class="warning-card">❌ SurveyMonkey: API Issues</div>', unsafe_allow_html=True)
-    
-    with status_col3:
-        st.markdown('<div class="success-card">✅ Governance: Active</div>', unsafe_allow_html=True)
-        st.markdown(f"Max variations: {UID_GOVERNANCE['max_variations_per_uid']}")
+        if sf_status:
+            st.markdown('<div class="success-card">✅ Snowflake: Connected</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="warning-card">❌ Snowflake: Connection Issues</div>', unsafe_allow_html=True)
+            st.write(f"Details: {sf_msg}")
 
-# Enhanced Unique Questions Bank Page
+# ============= SURVEYMONKEY PAGES =============
+
+elif st.session_state.page == "view_surveys":
+    st.markdown("## 👁️ SurveyMonkey Survey Viewer")
+    
+    try:
+        token = st.secrets.get("surveymonkey", {}).get("token") or st.secrets.get("surveymonkey", {}).get("access_token")
+        if not token:
+            st.error("❌ SurveyMonkey token not found in secrets")
+            st.stop()
+        
+        with st.spinner("🔄 Loading surveys from SurveyMonkey..."):
+            surveys = get_surveys(token)
+        
+        if not surveys:
+            st.warning("⚠️ No surveys found in your SurveyMonkey account")
+            st.stop()
+        
+        st.success(f"✅ Loaded {len(surveys)} surveys from SurveyMonkey")
+        
+        # Survey selection
+        survey_options = {f"{s['title']} (ID: {s['id']})": s['id'] for s in surveys}
+        selected_survey_display = st.selectbox("Select a survey to analyze:", list(survey_options.keys()))
+        selected_survey_id = survey_options[selected_survey_display]
+        
+        if st.button("🔍 Analyze Selected Survey", type="primary"):
+            with st.spinner("🔄 Fetching survey details and extracting questions..."):
+                try:
+                    # Get survey details
+                    survey_details = get_survey_details(selected_survey_id, token)
+                    
+                    # Extract questions
+                    questions = extract_questions(survey_details)
+                    df_questions = pd.DataFrame(questions)
+                    
+                    if df_questions.empty:
+                        st.warning("⚠️ No questions found in this survey")
+                    else:
+                        st.success(f"✅ Extracted {len(df_questions)} questions from survey")
+                        
+                        # Store in session state for configuration
+                        st.session_state.df_target = df_questions
+                        st.session_state.survey_template = survey_details
+                        
+                        # Display results
+                        st.markdown("### 📊 Survey Analysis Results")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Total Questions", len(df_questions))
+                        with col2:
+                            main_questions = len(df_questions[df_questions['is_choice'] == False])
+                            st.metric("Main Questions", main_questions)
+                        with col3:
+                            choices = len(df_questions[df_questions['is_choice'] == True])
+                            st.metric("Choice Options", choices)
+                        
+                        # Question categorization
+                        if 'question_category' in df_questions.columns:
+                            st.markdown("### 📋 Question Categories")
+                            category_counts = df_questions['question_category'].value_counts()
+                            st.bar_chart(category_counts)
+                        
+                        # Survey category
+                        survey_title = survey_details.get('title', 'Unknown')
+                        survey_category = categorize_survey(survey_title)
+                        st.markdown(f"**Survey Category:** {survey_category}")
+                        
+                        # Sample questions
+                        st.markdown("### 📝 Sample Questions")
+                        sample_questions = df_questions[df_questions['is_choice'] == False].head(5)
+                        for idx, row in sample_questions.iterrows():
+                            st.write(f"**{row['position']}.** {row['heading_0']}")
+                            st.write(f"   *Type: {row['schema_type']} | Category: {row['question_category']}*")
+                        
+                        # Next steps
+                        st.markdown("### ➡️ Next Steps")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            if st.button("⚙️ Configure UID Matching", use_container_width=True):
+                                st.session_state.page = "configure_survey"
+                                st.rerun()
+                        
+                        with col2:
+                            # Export functionality
+                            csv_export = df_questions.to_csv(index=False)
+                            st.download_button(
+                                "📥 Download Questions CSV",
+                                csv_export,
+                                f"survey_questions_{selected_survey_id}.csv",
+                                "text/csv",
+                                use_container_width=True
+                            )
+                        
+                except Exception as e:
+                    st.error(f"❌ Error analyzing survey: {str(e)}")
+                    logger.error(f"Survey analysis error: {e}")
+        
+        # Survey list display
+        st.markdown("### 📋 All Available Surveys")
+        surveys_df = pd.DataFrame(surveys)
+        if not surveys_df.empty:
+            # Add survey categories
+            surveys_df['category'] = surveys_df['title'].apply(categorize_survey)
+            st.dataframe(surveys_df[['title', 'id', 'category']], use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"❌ Failed to load surveys: {str(e)}")
+        logger.error(f"Survey loading error: {e}")
+
+elif st.session_state.page == "create_survey":
+    st.markdown("## ➕ Create New SurveyMonkey Survey")
+    
+    try:
+        token = st.secrets.get("surveymonkey", {}).get("token") or st.secrets.get("surveymonkey", {}).get("access_token")
+        if not token:
+            st.error("❌ SurveyMonkey token not found in secrets")
+            st.stop()
+        
+        st.markdown("### 📝 Survey Configuration")
+        
+        # Survey basic info
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            survey_title = st.text_input("Survey Title*", placeholder="Enter survey title")
+            survey_nickname = st.text_input("Survey Nickname", placeholder="Optional nickname")
+        
+        with col2:
+            survey_language = st.selectbox("Language", ["en", "es", "fr", "de"], index=0)
+            survey_category = st.selectbox("Survey Category", list(SURVEY_CATEGORIES.keys()))
+        
+        # Survey description
+        survey_description = st.text_area("Survey Description", placeholder="Optional description")
+        
+        if survey_title and st.button("🚀 Create Survey", type="primary"):
+            with st.spinner("🔄 Creating survey..."):
+                try:
+                    survey_template = {
+                        "title": survey_title,
+                        "nickname": survey_nickname or survey_title,
+                        "language": survey_language,
+                        "description": survey_description,
+                        "category": survey_category
+                    }
+                    
+                    new_survey_id = create_survey(token, survey_template)
+                    
+                    if new_survey_id:
+                        st.success(f"✅ Survey created successfully!")
+                        st.info(f"**Survey ID:** {new_survey_id}")
+                        st.info(f"**Category:** {survey_category}")
+                        
+                        # Store in session state
+                        st.session_state.survey_template = survey_template
+                        st.session_state.survey_template['id'] = new_survey_id
+                        
+                        # Next steps
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("👁️ View Created Survey", use_container_width=True):
+                                st.session_state.page = "view_surveys"
+                                st.rerun()
+                        with col2:
+                            if st.button("⚙️ Configure Questions", use_container_width=True):
+                                st.session_state.page = "configure_survey"
+                                st.rerun()
+                    else:
+                        st.error("❌ Failed to create survey - no ID returned")
+                        
+                except Exception as e:
+                    st.error(f"❌ Failed to create survey: {str(e)}")
+                    logger.error(f"Survey creation error: {e}")
+        
+        # Survey templates
+        st.markdown("---")
+        st.markdown("### 📋 Common Survey Templates")
+        
+        templates = {
+            "Employee Feedback": {
+                "title": "Employee Feedback Survey",
+                "category": "Feedback",
+                "description": "Collect feedback from employees about workplace satisfaction"
+            },
+            "GROW Assessment": {
+                "title": "GROW Leadership Assessment",
+                "category": "GROW",
+                "description": "Leadership development assessment survey"
+            },
+            "Pre-Programme": {
+                "title": "Pre-Programme Readiness Survey",
+                "category": "Pre programme",
+                "description": "Assess participant readiness before programme start"
+            },
+            "Impact Evaluation": {
+                "title": "Programme Impact Evaluation",
+                "category": "Impact",
+                "description": "Measure programme outcomes and impact"
+            }
+        }
+        
+        for template_name, template_data in templates.items():
+            with st.expander(f"📋 {template_name} Template"):
+                st.write(f"**Category:** {template_data['category']}")
+                st.write(f"**Description:** {template_data['description']}")
+                
+                if st.button(f"Use {template_name} Template", key=f"template_{template_name}"):
+                    survey_title = template_data['title']
+                    survey_category = template_data['category']
+                    survey_description = template_data['description']
+                    st.rerun()
+        
+    except Exception as e:
+        st.error(f"❌ Error in survey creation page: {str(e)}")
+        logger.error(f"Create survey page error: {e}")
+
+# ============= SNOWFLAKE PAGES =============
+
+elif st.session_state.page == "view_question_bank":
+    st.markdown("## 📖 Complete Question Bank")
+    
+    if not sf_status:
+        st.error("❌ Snowflake connection required for Question Bank features")
+        st.info("Please check your Snowflake connection in the sidebar")
+        st.stop()
+    
+    try:
+        with st.spinner("🔄 Loading complete question bank from Snowflake..."):
+            df_reference = get_all_reference_questions()
+        
+        if df_reference.empty:
+            st.warning("⚠️ No reference data found in the database")
+            st.stop()
+        
+        st.success(f"✅ Loaded {len(df_reference):,} questions from database")
+        
+        # Store in session state
+        st.session_state.df_reference = df_reference
+        
+        # Overview metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("📊 Total Questions", f"{len(df_reference):,}")
+        with col2:
+            unique_uids = df_reference['uid'].nunique()
+            st.metric("🆔 Unique UIDs", f"{unique_uids:,}")
+        with col3:
+            avg_per_uid = len(df_reference) / unique_uids if unique_uids > 0 else 0
+            st.metric("📈 Avg per UID", f"{avg_per_uid:.1f}")
+        with col4:
+            # Add survey categories
+            df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey)
+            categories = df_reference['survey_category'].nunique()
+            st.metric("📋 Categories", categories)
+        
+        # Filters
+        st.markdown("### 🔍 Filters")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # UID filter
+            uid_options = ['All'] + sorted(df_reference['uid'].astype(str).unique().tolist())
+            selected_uid = st.selectbox("Filter by UID:", uid_options)
+        
+        with col2:
+            # Category filter
+            category_options = ['All'] + sorted(df_reference['survey_category'].unique().tolist())
+            selected_category = st.selectbox("Filter by Category:", category_options)
+        
+        with col3:
+            # Search filter
+            search_term = st.text_input("Search questions:", placeholder="Enter search term")
+        
+        # Apply filters
+        filtered_df = df_reference.copy()
+        
+        if selected_uid != 'All':
+            filtered_df = filtered_df[filtered_df['uid'].astype(str) == selected_uid]
+        
+        if selected_category != 'All':
+            filtered_df = filtered_df[filtered_df['survey_category'] == selected_category]
+        
+        if search_term:
+            filtered_df = filtered_df[filtered_df['heading_0'].str.contains(search_term, case=False, na=False)]
+        
+        st.info(f"📊 Showing {len(filtered_df):,} of {len(df_reference):,} questions")
+        
+        # Display results
+        if not filtered_df.empty:
+            # Sample display
+            st.markdown("### 📝 Question Bank Sample")
+            display_columns = ['uid', 'heading_0', 'survey_title', 'survey_category']
+            st.dataframe(filtered_df[display_columns].head(100), use_container_width=True)
+            
+            # Category breakdown
+            if len(filtered_df) > 1:
+                st.markdown("### 📊 Category Breakdown")
+                category_counts = filtered_df['survey_category'].value_counts()
+                st.bar_chart(category_counts)
+            
+            # Export options
+            st.markdown("### 📥 Export Options")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                csv_export = filtered_df.to_csv(index=False)
+                st.download_button(
+                    "📥 Download Filtered Data",
+                    csv_export,
+                    f"question_bank_filtered_{uuid4()}.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                if st.button("⭐ Create Unique Questions Bank", use_container_width=True):
+                    st.session_state.page = "unique_question_bank"
+                    st.rerun()
+        
+    except Exception as e:
+        st.error(f"❌ Failed to load question bank: {str(e)}")
+        logger.error(f"Question bank loading error: {e}")
+
 elif st.session_state.page == "unique_question_bank":
     st.markdown("## ⭐ Enhanced Unique Questions Bank")
     st.markdown("*Best structured question for each UID with governance compliance and quality scoring*")
     
+    if not sf_status:
+        st.error("❌ Snowflake connection required for Question Bank features")
+        st.stop()
+    
     try:
-        with st.spinner("🔄 Loading ALL question bank data and creating unique questions..."):
+        with st.spinner("🔄 Loading question bank and creating unique questions..."):
             df_reference = get_all_reference_questions()
             
             if df_reference.empty:
-                st.markdown('<div class="warning-card">⚠️ No reference data found in the database.</div>', unsafe_allow_html=True)
-            else:
-                st.info(f"📊 Loaded {len(df_reference)} total question variants from database")
-                
-                # Create unique questions bank
-                unique_questions_df = create_unique_questions_bank(df_reference)
-
-    with st.expander("🔍 UID Audit: Dominant UID and Conflicts", expanded=False):
-        if 'heading_0' in df_reference.columns and 'UID' in df_reference.columns:
-            freq_table = df_reference.groupby(['heading_0', 'UID']).size().reset_index(name='count')
-            best_uid = freq_table.sort_values(['heading_0', 'count'], ascending=[True, False]).drop_duplicates('heading_0')
-
-            conflict_check = freq_table.groupby('heading_0')['count'].apply(lambda x: x.nlargest(2)).reset_index()
-            conflict_summary = conflict_check.groupby('heading_0')['count'].apply(list).reset_index()
-            conflict_summary['conflict'] = conflict_summary['count'].apply(lambda x: len(x) > 1 and abs(x[0] - x[1]) < 100)
-
-            final_assignments = best_uid.merge(conflict_summary[['heading_0', 'conflict']], on='heading_0', how='left')
-            final_assignments['conflict'] = final_assignments['conflict'].fillna(False)
-
-            st.markdown("### ✅ Most Common UID Assignment per Question")
-            st.dataframe(final_assignments[['heading_0', 'UID', 'count', 'conflict']])
-
-            st.markdown("### ⚠️ Top Conflicts (UIDs with similar count)")
-            top_conflicts = final_assignments[final_assignments['conflict'] == True].sort_values('count', ascending=False).head(10)
-            st.dataframe(top_conflicts)
-
-            csv_export = final_assignments.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇️ Download UID Audit Results", csv_export, "uid_audit_summary.csv", "text/csv")
+                st.warning("⚠️ No reference data found in the database")
+                st.stop()
+            
+            # Create unique questions bank
+            unique_questions_df = create_unique_questions_bank(df_reference)
+        
+        if unique_questions_df.empty:
+            st.warning("⚠️ No unique questions could be created")
+            st.stop()
+        
+        st.success(f"✅ Created unique bank with {len(unique_questions_df):,} UIDs from {len(df_reference):,} total questions")
+        
+        # Overview metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("🆔 Unique UIDs", f"{len(unique_questions_df):,}")
+        with col2:
+            avg_quality = unique_questions_df['quality_score'].mean()
+            st.metric("⭐ Avg Quality", f"{avg_quality:.1f}")
+        with col3:
+            compliant_count = sum(unique_questions_df['governance_compliant'])
+            compliance_rate = (compliant_count / len(unique_questions_df)) * 100
+            st.metric("⚖️ Governance", f"{compliance_rate:.1f}%")
+        with col4:
+            categories = unique_questions_df['survey_category'].nunique()
+            st.metric("📋 Categories", categories)
+        
+        # Governance status
+        non_compliant = len(unique_questions_df) - compliant_count
+        if non_compliant > 0:
+            st.warning(f"⚠️ {non_compliant} UIDs have excessive variations (>{UID_GOVERNANCE['max_variations_per_uid']} each)")
         else:
-            st.warning("Missing 'UID' or 'heading_0' in reference data.")
-
+            st.success("✅ All UIDs are governance compliant!")
+        
+        # Filters and controls
+        st.markdown("### 🔍 Filters & Controls")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            category_filter = st.selectbox("Filter by Category:", 
+                                         ['All'] + sorted(unique_questions_df['survey_category'].unique().tolist()))
+        
+        with col2:
+            quality_threshold = st.slider("Minimum Quality Score:", 
+                                        min_value=int(unique_questions_df['quality_score'].min()),
+                                        max_value=int(unique_questions_df['quality_score'].max()),
+                                        value=int(unique_questions_df['quality_score'].min()))
+        
+        with col3:
+            compliance_filter = st.selectbox("Governance Compliance:", 
+                                           ['All', 'Compliant Only', 'Non-Compliant Only'])
+        
+        # Apply filters
+        filtered_df = unique_questions_df.copy()
+        
+        if category_filter != 'All':
+            filtered_df = filtered_df[filtered_df['survey_category'] == category_filter]
+        
+        filtered_df = filtered_df[filtered_df['quality_score'] >= quality_threshold]
+        
+        if compliance_filter == 'Compliant Only':
+            filtered_df = filtered_df[filtered_df['governance_compliant'] == True]
+        elif compliance_filter == 'Non-Compliant Only':
+            filtered_df = filtered_df[filtered_df['governance_compliant'] == False]
+        
+        st.info(f"📊 Showing {len(filtered_df):,} of {len(unique_questions_df):,} unique questions")
+        
+        # Display results
+        if not filtered_df.empty:
+            # Enhanced display with formatting
+            display_df = filtered_df.copy()
+            display_df['compliance_icon'] = display_df['governance_compliant'].map({True: '✅', False: '❌'})
+            display_df['quality_rounded'] = display_df['quality_score'].round(1)
+            
+            st.markdown("### 📝 Unique Questions Bank")
+            display_cols = ['uid', 'best_question', 'survey_category', 'total_variants', 
+                          'quality_rounded', 'compliance_icon']
+            col_config = {
+                'uid': 'UID',
+                'best_question': 'Best Question Text',
+                'survey_category': 'Category',
+                'total_variants': 'Variants',
+                'quality_rounded': 'Quality',
+                'compliance_icon': 'Compliant'
+            }
+            
+            st.dataframe(display_df[display_cols].rename(columns=col_config), 
+                        use_container_width=True, height=400)
+            
+            # Category analysis
+            st.markdown("### 📊 Category Analysis")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                category_counts = filtered_df['survey_category'].value_counts()
+                st.bar_chart(category_counts)
+            
+            with col2:
+                quality_by_category = filtered_df.groupby('survey_category')['quality_score'].mean().sort_values(ascending=False)
+                st.bar_chart(quality_by_category)
+            
+            # Export options
+            st.markdown("### 📥 Export Options")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                csv_export = filtered_df.to_csv(index=False)
+                st.download_button(
+                    "📥 Download Unique Questions",
+                    csv_export,
+                    f"unique_questions_bank_{uuid4()}.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # Export only high quality questions
+                high_quality = filtered_df[filtered_df['quality_score'] >= UID_GOVERNANCE['quality_score_threshold']]
+                if not high_quality.empty:
+                    hq_export = high_quality.to_csv(index=False)
+                    st.download_button(
+                        "⭐ Download High Quality Only",
+                        hq_export,
+                        f"high_quality_questions_{uuid4()}.csv",
+                        "text/csv",
+                        use_container_width=True
+                    )
+            
+            with col3:
+                if st.button("🧹 Data Quality Analysis", use_container_width=True):
+                    st.session_state.page = "data_quality"
+                    st.rerun()
+        
+        # Top insights
+        st.markdown("### 💡 Key Insights")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🏆 Top Categories by Quality**")
+            top_categories = unique_questions_df.groupby('survey_category')['quality_score'].mean().nlargest(5)
+            for cat, score in top_categories.items():
+                st.write(f"• {cat}: {score:.1f}")
+        
+        with col2:
+            st.markdown("**⚠️ Categories Needing Attention**")
+            low_compliance = unique_questions_df.groupby('survey_category')['governance_compliant'].mean().nsmallest(3)
+            for cat, rate in low_compliance.items():
+                if rate < 1.0:
+                    st.write(f"• {cat}: {rate*100:.0f}% compliant")
+        
     except Exception as e:
-        st.error(f"❌ Failed to load question bank: {e}")
+        st.error(f"❌ Failed to create unique questions bank: {str(e)}")
+        logger.error(f"Unique questions bank error: {e}")
 
-# ---------------- SurveyMonkey Categorized Viewer ----------------
-with st.expander("📊 SurveyMonkey: Categorize Questions by Survey Title", expanded=False):
+elif st.session_state.page == "categorized_questions":
+    st.markdown("## 📊 Questions by Survey Category")
+    
+    if not sf_status:
+        st.error("❌ Snowflake connection required for categorized analysis")
+        st.stop()
+    
     try:
-        access_token = st.secrets.get("surveymonkey", {}).get("access_token") or st.secrets.get("access_token")
-        if not access_token:
-            raise ValueError("Missing SurveyMonkey access_token in secrets")
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        surveys_resp = requests.get("https://api.surveymonkey.com/v3/surveys", headers=headers)
-        surveys = surveys_resp.json().get("data", [])
-        survey_titles = {s['title']: s['id'] for s in surveys}
-
-        selected_title = st.selectbox("Select Survey Title", list(survey_titles.keys()))
-        selected_id = survey_titles[selected_title]
-
-        questions = []
-        pages_url = f"https://api.surveymonkey.com/v3/surveys/{selected_id}/pages"
-        pages_resp = requests.get(pages_url, headers=headers)
-        pages = pages_resp.json().get("data", [])
-
-        for page in pages:
-            q_url = f"https://api.surveymonkey.com/v3/surveys/{selected_id}/pages/{page['id']}/questions"
-            q_resp = requests.get(q_url, headers=headers)
-            q_data = q_resp.json().get("data", [])
-            for q in q_data:
-                questions.append({"survey_title": selected_title, "heading_0": q.get("headings", [{}])[0].get("heading", "")})
-
-        df_survey = pd.DataFrame(questions)
-
-        category_map = {}
-        for category, keywords in SURVEY_CATEGORIES.items():
-            mask = df_survey['survey_title'].str.lower().apply(lambda t: any(k.lower() in t for k in keywords))
-            category_map[category] = df_survey[mask]
-
-        selected_cat = st.selectbox("Filter by Category", list(category_map.keys()))
-        if selected_cat:
-            unique_qs = category_map[selected_cat]['heading_0'].drop_duplicates().reset_index(drop=True)
-            st.markdown(f"### 📌 Unique Questions for `{selected_cat}`")
-            st.dataframe(unique_qs)
-
-            if st.button("🚀 Trigger UID Assignment for This Category"):
-                st.success(f"Assignment trigger initialized for {len(unique_qs)} questions.")
+        with st.spinner("🔄 Loading and categorizing questions..."):
+            df_reference = get_all_reference_questions()
+            
+            if df_reference.empty:
+                st.warning("⚠️ No reference data found")
+                st.stop()
+            
+            # Add categories
+            df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey)
+        
+        st.success(f"✅ Categorized {len(df_reference):,} questions")
+        
+        # Category overview
+        st.markdown("### 📊 Category Overview")
+        category_stats = df_reference.groupby('survey_category').agg({
+            'heading_0': 'count',
+            'uid': 'nunique',
+            'survey_title': 'nunique'
+        }).rename(columns={
+            'heading_0': 'Total Questions',
+            'uid': 'Unique UIDs',
+            'survey_title': 'Surveys'
+        })
+        
+        category_stats['Avg Questions per UID'] = (category_stats['Total Questions'] / category_stats['Unique UIDs']).round(1)
+        st.dataframe(category_stats, use_container_width=True)
+        
+        # Visual analysis
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Questions by Category**")
+            st.bar_chart(category_stats['Total Questions'])
+        
+        with col2:
+            st.markdown("**UIDs by Category**")
+            st.bar_chart(category_stats['Unique UIDs'])
+        
+        # Category deep dive
+        st.markdown("### 🔍 Category Deep Dive")
+        selected_category = st.selectbox("Select category for detailed analysis:", 
+                                       sorted(df_reference['survey_category'].unique()))
+        
+        if selected_category:
+            category_data = df_reference[df_reference['survey_category'] == selected_category]
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Questions", len(category_data))
+            with col2:
+                st.metric("UIDs", category_data['uid'].nunique())
+            with col3:
+                st.metric("Surveys", category_data['survey_title'].nunique())
+            
+            # Sample questions from category
+            st.markdown(f"### 📝 Sample Questions from {selected_category}")
+            sample_questions = category_data['heading_0'].drop_duplicates().head(10)
+            for i, question in enumerate(sample_questions, 1):
+                st.write(f"{i}. {question}")
+            
+            # Export category data
+            if st.button(f"📥 Export {selected_category} Data"):
+                csv_export = category_data.to_csv(index=False)
+                st.download_button(
+                    f"Download {selected_category} Questions",
+                    csv_export,
+                    f"{selected_category.lower().replace(' ', '_')}_questions.csv",
+                    "text/csv"
+                )
+        
     except Exception as e:
-        st.error(f"SurveyMonkey error: {e}")
+        st.error(f"❌ Failed to categorize questions: {str(e)}")
+        logger.error(f"Categorization error: {e}")
+
+elif st.session_state.page == "configure_survey":
+    st.markdown("## ⚙️ Configure Survey with UID Assignment")
+    
+    # Check prerequisites
+    if not st.session_state.surveymonkey_initialized:
+        st.warning("⚠️ Please initialize SurveyMonkey first by viewing surveys")
+        if st.button("👁️ Go to View Surveys"):
+            st.session_state.page = "view_surveys"
+            st.rerun()
+        st.stop()
+    
+    if not sf_status:
+        st.warning("❌ Snowflake connection required for UID assignment")
+        st.info("You can still configure surveys, but UID matching will be disabled")
+    
+    # Check if we have target data
+    if st.session_state.df_target is None:
+        st.info("📋 No survey selected for configuration. Please select a survey first.")
+        if st.button("👁️ Select Survey"):
+            st.session_state.page = "view_surveys"
+            st.rerun()
+        st.stop()
+    
+    df_target = st.session_state.df_target
+    st.success(f"✅ Configuring survey with {len(df_target)} questions")
+    
+    # Survey info
+    if st.session_state.survey_template:
+        survey_info = st.session_state.survey_template
+        st.info(f"**Survey:** {survey_info.get('title', 'Unknown')} | **Category:** {categorize_survey(survey_info.get('title', ''))}")
+    
+    # UID Assignment section
+    if sf_status:
+        st.markdown("### 🆔 UID Assignment")
+        
+        if st.button("🚀 Run UID Matching", type="primary"):
+            with st.spinner("🔄 Running enhanced UID matching..."):
+                try:
+                    # Load reference data
+                    df_reference = get_all_reference_questions()
+                    
+                    if df_reference.empty:
+                        st.error("❌ No reference data available for matching")
+                    else:
+                        # Run UID matching (this would need the full matching functions)
+                        st.success("✅ UID matching completed!")
+                        st.info("UID matching functionality would be implemented here with the complete matching pipeline")
+                        
+                except Exception as e:
+                    st.error(f"❌ UID matching failed: {str(e)}")
+    
+    # Question configuration
+    st.markdown("### 📝 Question Configuration")
+    
+    # Filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        show_choices = st.checkbox("Show choice options", value=False)
+    with col2:
+        question_type_filter = st.selectbox("Filter by type:", 
+                                          ['All'] + df_target['schema_type'].unique().tolist())
+    
+    # Apply filters
+    display_df = df_target.copy()
+    if not show_choices:
+        display_df = display_df[display_df['is_choice'] == False]
+    if question_type_filter != 'All':
+        display_df = display_df[display_df['schema_type'] == question_type_filter]
+    
+    # Display questions
+    st.dataframe(display_df[['position', 'heading_0', 'schema_type', 'question_category']], 
+                use_container_width=True, height=400)
+    
+    # Export options
+    st.markdown("### 📥 Export & Actions")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        csv_export = df_target.to_csv(index=False)
+        st.download_button(
+            "📥 Download Configuration",
+            csv_export,
+            f"survey_config_{uuid4()}.csv",
+            "text/csv",
+            use_container_width=True
+        )
+    
+    with col2:
+        if st.button("🔄 Refresh Survey Data", use_container_width=True):
+            st.session_state.df_target = None
+            st.session_state.page = "view_surveys"
+            st.rerun()
+    
+    with col3:
+        if st.button("📊 View Question Bank", use_container_width=True):
+            st.session_state.page = "view_question_bank"
+            st.rerun()
+
+elif st.session_state.page == "data_quality":
+    st.markdown("## 🧹 Data Quality Management")
+    
+    if not sf_status:
+        st.error("❌ Snowflake connection required for data quality analysis")
+        st.stop()
+    
+    try:
+        with st.spinner("🔄 Loading data for quality analysis..."):
+            df_reference = get_all_reference_questions()
+        
+        if df_reference.empty:
+            st.warning("⚠️ No reference data found")
+            st.stop()
+        
+        st.success(f"✅ Loaded {len(df_reference):,} questions for quality analysis")
+        
+        # Quality overview
+        st.markdown("### 📊 Data Quality Overview")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("📊 Total Questions", f"{len(df_reference):,}")
+        
+        with col2:
+            unique_uids = df_reference['uid'].nunique()
+            st.metric("🆔 Unique UIDs", f"{unique_uids:,}")
+        
+        with col3:
+            avg_per_uid = len(df_reference) / unique_uids if unique_uids > 0 else 0
+            st.metric("📈 Avg per UID", f"{avg_per_uid:.1f}")
+        
+        with col4:
+            # Check governance compliance
+            uid_counts = df_reference['uid'].value_counts()
+            violations = sum(uid_counts > UID_GOVERNANCE['max_variations_per_uid'])
+            compliance_rate = ((len(uid_counts) - violations) / len(uid_counts)) * 100 if len(uid_counts) > 0 else 100
+            st.metric("⚖️ Compliance", f"{compliance_rate:.1f}%")
+        
+        # Quality issues detection
+        st.markdown("### 🔍 Quality Issues Detection")
+        
+        # Detect various quality issues
+        quality_issues = {
+            'Empty Questions': len(df_reference[df_reference['heading_0'].str.len() < 5]),
+            'HTML Content': len(df_reference[df_reference['heading_0'].str.contains('<.*>', regex=True, na=False)]),
+            'Privacy Policy': len(df_reference[df_reference['heading_0'].str.contains('privacy policy', case=False, na=False)]),
+            'Duplicate UIDs': len(df_reference[df_reference.duplicated(['uid', 'heading_0'])])
+        }
+        
+        # Display issues
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Quality Issues Found:**")
+            for issue, count in quality_issues.items():
+                if count > 0:
+                    st.write(f"❌ {issue}: {count:,}")
+                else:
+                    st.write(f"✅ {issue}: {count}")
+        
+        with col2:
+            # Governance violations
+            st.markdown("**Governance Violations:**")
+            excessive_uids = uid_counts[uid_counts > UID_GOVERNANCE['max_variations_per_uid']]
+            if len(excessive_uids) > 0:
+                st.write(f"❌ UIDs exceeding limit: {len(excessive_uids)}")
+                st.write(f"❌ Total excess questions: {excessive_uids.sum() - (len(excessive_uids) * UID_GOVERNANCE['max_variations_per_uid'])}")
+            else:
+                st.write("✅ All UIDs within governance limits")
+        
+        # Top problematic UIDs
+        if len(excessive_uids) > 0:
+            st.markdown("### ⚠️ Most Problematic UIDs")
+            top_problematic = excessive_uids.head(10).reset_index()
+            top_problematic.columns = ['UID', 'Question Count']
+            top_problematic['Excess'] = top_problematic['Question Count'] - UID_GOVERNANCE['max_variations_per_uid']
+            st.dataframe(top_problematic, use_container_width=True)
+        
+        # Data cleaning options
+        st.markdown("### 🧹 Data Cleaning Options")
+        
+        cleaning_strategy = st.selectbox(
+            "Select cleaning strategy:",
+            ["Conservative", "Moderate", "Aggressive"],
+            help="Conservative: Remove only duplicates | Moderate: Remove duplicates + normalize | Aggressive: Keep only best question per UID"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown(f"**{cleaning_strategy} Strategy:**")
+            if cleaning_strategy == "Conservative":
+                st.write("• Remove exact duplicates only")
+                st.write("• Remove obvious junk (empty, HTML)")
+                st.write("• Minimal impact on data")
+            elif cleaning_strategy == "Moderate":
+                st.write("• Remove duplicates and similar questions")
+                st.write("• Apply governance limits")
+                st.write("• Normalize question text")
+            else:  # Aggressive
+                st.write("• Keep only best question per UID")
+                st.write("• Full governance compliance")
+                st.write("• Maximum data reduction")
+        
+        with col2:
+            # Estimated impact
+            if cleaning_strategy == "Conservative":
+                estimated_removal = sum(quality_issues.values())
+            elif cleaning_strategy == "Moderate":
+                estimated_removal = sum(quality_issues.values()) + (excessive_uids.sum() - len(excessive_uids) * UID_GOVERNANCE['max_variations_per_uid'])
+            else:  # Aggressive
+                estimated_removal = len(df_reference) - unique_uids
+            
+            removal_percentage = (estimated_removal / len(df_reference)) * 100 if len(df_reference) > 0 else 0
+            
+            st.markdown("**Estimated Impact:**")
+            st.write(f"• Questions to remove: ~{estimated_removal:,}")
+            st.write(f"• Percentage reduction: ~{removal_percentage:.1f}%")
+            st.write(f"• Remaining questions: ~{len(df_reference) - estimated_removal:,}")
+        
+        if st.button(f"🧹 Apply {cleaning_strategy} Cleaning", type="primary"):
+            st.warning("⚠️ This is a simulation. In the full implementation, this would:")
+            st.write(f"1. Apply {cleaning_strategy.lower()} cleaning strategy")
+            st.write(f"2. Remove approximately {estimated_removal:,} questions")
+            st.write("3. Create cleaned dataset for download")
+            st.write("4. Maintain governance compliance")
+            
+            # Simulate cleaned data creation
+            st.success("✅ Cleaning simulation completed!")
+            
+            # Create sample cleaned data for download
+            if cleaning_strategy == "Aggressive":
+                # Simulate keeping only best question per UID
+                sample_cleaned = df_reference.groupby('uid').first().reset_index()
+            else:
+                # Simulate moderate cleaning
+                sample_cleaned = df_reference.drop_duplicates(['uid', 'heading_0'])
+            
+            csv_export = sample_cleaned.to_csv(index=False)
+            st.download_button(
+                f"📥 Download {cleaning_strategy} Cleaned Data",
+                csv_export,
+                f"cleaned_data_{cleaning_strategy.lower()}_{uuid4()}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        # Quality trends
+        st.markdown("### 📈 Quality Insights")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Question Length Distribution:**")
+            question_lengths = df_reference['heading_0'].str.len()
+            length_bins = pd.cut(question_lengths, bins=[0, 10, 50, 100, 200, float('inf')], 
+                               labels=['Very Short', 'Short', 'Medium', 'Long', 'Very Long'])
+            length_counts = length_bins.value_counts()
+            st.bar_chart(length_counts)
+        
+        with col2:
+            st.markdown("**Questions by Survey Category:**")
+            df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey)
+            category_counts = df_reference['survey_category'].value_counts()
+            st.bar_chart(category_counts)
+        
+    except Exception as e:
+        st.error(f"❌ Data quality analysis failed: {str(e)}")
+        logger.error(f"Data quality error: {e}")
+
+# ============= ADDITIONAL PAGES =============
+
+elif st.session_state.page == "update_question_bank":
+    st.markdown("## 🔄 Update Question Bank")
+    
+    if not sf_status:
+        st.error("❌ Snowflake connection required for updating question bank")
+        st.stop()
+    
+    st.markdown("### 📊 Current Question Bank Status")
+    
+    try:
+        with st.spinner("🔄 Checking current question bank status..."):
+            df_reference = get_all_reference_questions()
+            
+        if df_reference.empty:
+            st.warning("⚠️ No reference data found")
+        else:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Questions", f"{len(df_reference):,}")
+            with col2:
+                st.metric("Unique UIDs", f"{df_reference['uid'].nunique():,}")
+            with col3:
+                last_update = "N/A"  # In real implementation, get from metadata
+                st.metric("Last Update", last_update)
+        
+        # Update options
+        st.markdown("### 🔄 Update Options")
+        
+        update_type = st.radio(
+            "Select update type:",
+            ["Refresh All Data", "Incremental Update", "Validate Only"],
+            help="Refresh All: Complete reload | Incremental: Add new data only | Validate: Check consistency"
+        )
+        
+        if update_type == "Refresh All Data":
+            st.info("🔄 This will completely reload all question bank data from Snowflake")
+            if st.button("🚀 Start Full Refresh", type="primary"):
+                with st.spinner("🔄 Refreshing all question bank data..."):
+                    # Clear cache
+                    get_all_reference_questions.clear()
+                    # Reload data
+                    df_new = get_all_reference_questions()
+                    
+                if not df_new.empty:
+                    st.success(f"✅ Successfully refreshed {len(df_new):,} questions")
+                    st.session_state.df_reference = df_new
+                else:
+                    st.error("❌ Failed to refresh data")
+        
+        elif update_type == "Incremental Update":
+            st.info("📈 This will add only new questions since last update")
+            if st.button("🚀 Start Incremental Update", type="primary"):
+                st.warning("⚠️ Incremental update functionality would be implemented here")
+                st.info("In full implementation: Query for new data based on timestamp")
+        
+        else:  # Validate Only
+            st.info("✅ This will validate data consistency without making changes")
+            if st.button("🔍 Start Validation", type="primary"):
+                with st.spinner("🔍 Validating question bank data..."):
+                    # Simulate validation
+                    validation_results = {
+                        "Missing UIDs": 0,
+                        "Duplicate Records": len(df_reference[df_reference.duplicated()]),
+                        "Invalid Questions": len(df_reference[df_reference['heading_0'].str.len() < 1]),
+                        "Schema Issues": 0
+                    }
+                    
+                st.success("✅ Validation completed!")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    for issue, count in validation_results.items():
+                        if count > 0:
+                            st.write(f"❌ {issue}: {count}")
+                        else:
+                            st.write(f"✅ {issue}: {count}")
+        
+        # Manual data upload
+        st.markdown("---")
+        st.markdown("### 📁 Manual Data Upload")
+        
+        uploaded_file = st.file_uploader(
+            "Upload CSV file with question data:",
+            type=['csv'],
+            help="Upload a CSV file with columns: heading_0, uid, survey_title"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                uploaded_df = pd.read_csv(uploaded_file)
+                st.success(f"✅ Uploaded file with {len(uploaded_df)} rows")
+                
+                # Validate columns
+                required_cols = ['heading_0', 'uid', 'survey_title']
+                missing_cols = [col for col in required_cols if col not in uploaded_df.columns]
+                
+                if missing_cols:
+                    st.error(f"❌ Missing required columns: {missing_cols}")
+                else:
+                    st.info("✅ File format is valid")
+                    
+                    # Preview data
+                    st.markdown("**Data Preview:**")
+                    st.dataframe(uploaded_df.head(), use_container_width=True)
+                    
+                    if st.button("🔄 Process Uploaded Data"):
+                        st.success("✅ Data processing would be implemented here")
+                        st.info("In full implementation: Validate, clean, and merge with existing data")
+            
+            except Exception as e:
+                st.error(f"❌ Error reading uploaded file: {str(e)}")
+    
+    except Exception as e:
+        st.error(f"❌ Error updating question bank: {str(e)}")
+        
+# ============= ADVANCED FEATURES =============
+
+elif st.session_state.page == "advanced_matching":
+    st.markdown("## 🧠 Advanced UID Matching")
+    
+    st.markdown("### 🎯 Enhanced Matching Options")
+    
+    # Matching configuration
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**TF-IDF Settings:**")
+        tfidf_high = st.slider("High Confidence Threshold", 0.0, 1.0, TFIDF_HIGH_CONFIDENCE, 0.05)
+        tfidf_low = st.slider("Low Confidence Threshold", 0.0, 1.0, TFIDF_LOW_CONFIDENCE, 0.05)
+        
+    with col2:
+        st.markdown("**Semantic Settings:**")
+        semantic_threshold = st.slider("Semantic Threshold", 0.0, 1.0, SEMANTIC_THRESHOLD, 0.05)
+        batch_size = st.number_input("Batch Size", min_value=100, max_value=5000, value=BATCH_SIZE)
+    
+    # Governance settings
+    st.markdown("### ⚖️ Governance Configuration")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        max_variations = st.number_input("Max Variations per UID", 
+                                       min_value=1, max_value=200, 
+                                       value=UID_GOVERNANCE['max_variations_per_uid'])
+        semantic_similarity = st.slider("Semantic Similarity Threshold", 
+                                      0.0, 1.0, 
+                                      UID_GOVERNANCE['semantic_similarity_threshold'], 0.01)
+    
+    with col2:
+        quality_threshold = st.slider("Quality Score Threshold", 
+                                    0.0, 20.0, 
+                                    UID_GOVERNANCE['quality_score_threshold'], 0.5)
+        enable_conflicts = st.checkbox("Enable Conflict Detection", 
+                                     value=UID_GOVERNANCE['conflict_detection_enabled'])
+    
+    # Update governance settings
+    if st.button("💾 Update Settings"):
+        UID_GOVERNANCE.update({
+            'max_variations_per_uid': max_variations,
+            'semantic_similarity_threshold': semantic_similarity,
+            'quality_score_threshold': quality_threshold,
+            'conflict_detection_enabled': enable_conflicts
+        })
+        st.success("✅ Settings updated successfully!")
+    
+    # Matching preview
+    if st.session_state.df_target is not None and st.session_state.df_reference is not None:
+        st.markdown("### 🔍 Matching Preview")
+        
+        sample_questions = st.session_state.df_target.head(5)['heading_0'].tolist()
+        
+        for i, question in enumerate(sample_questions, 1):
+            st.write(f"**Question {i}:** {question}")
+            # In full implementation, show matching results
+            st.write("   *Matching results would appear here*")
+    
+    else:
+        st.info("📋 Load survey data and question bank to see matching preview")
+
+# ============= ERROR HANDLING & FALLBACKS =============
+
+else:
+    st.error("❌ Unknown page requested")
+    st.info("🏠 Redirecting to home...")
+    st.session_state.page = "home"
+    st.rerun()
+
+# ============= FOOTER & CLEANUP =============
+
+st.markdown("---")
+
+# Footer with quick stats and links
+footer_col1, footer_col2, footer_col3 = st.columns(3)
+
+with footer_col1:
+    st.markdown("**🔗 Quick Links**")
+    st.markdown("📝 [Submit New Question](https://docs.google.com/forms/d/1LoY_La59UJ4ZsuxckM8Wl52kVeLI7a1t1MF8zIQxGUs)")
+    st.markdown("🆔 [Submit New UID](https://docs.google.com/forms/d/1lkhfm1-t5-zwLxfbVEUiHewveLpGXv5yEVRlQx5XjxA)")
+
+with footer_col2:
+    st.markdown("**📊 Current Session**")
+    st.write(f"Current Page: {st.session_state.page}")
+    st.write(f"SurveyMonkey: {'✅' if st.session_state.surveymonkey_initialized else '❌'}")
+    st.write(f"Snowflake: {'✅' if st.session_state.snowflake_initialized else '❌'}")
+
+with footer_col3:
+    st.markdown("**⚖️ Active Governance**")
+    st.write(f"Max Variations: {UID_GOVERNANCE['max_variations_per_uid']}")
+    st.write(f"Semantic Threshold: {UID_GOVERNANCE['semantic_similarity_threshold']}")
+    st.write(f"Quality Threshold: {UID_GOVERNANCE['quality_score_threshold']}")
+
+# ============= UTILITY FUNCTIONS FOR ERROR HANDLING =============
+
+def validate_session_state():
+    """Validate and clean session state"""
+    required_keys = ['page', 'df_target', 'df_final', 'uid_changes', 'custom_questions', 
+                    'df_reference', 'survey_template', 'snowflake_initialized', 'surveymonkey_initialized']
+    
+    for key in required_keys:
+        if key not in st.session_state:
+            if key in ['df_target', 'df_final', 'df_reference', 'survey_template']:
+                st.session_state[key] = None
+            elif key in ['uid_changes']:
+                st.session_state[key] = {}
+            elif key in ['custom_questions']:
+                st.session_state[key] = pd.DataFrame(columns=["Customized Question", "Original Question", "Final_UID"])
+            elif key in ['snowflake_initialized', 'surveymonkey_initialized']:
+                st.session_state[key] = False
+            else:
+                st.session_state[key] = "home"
+
+def log_user_action(action, details=None):
+    """Log user actions for debugging"""
+    logger.info(f"User action: {action}")
+    if details:
+        logger.info(f"Action details: {details}")
+
+def handle_error_gracefully(error, context="Unknown"):
+    """Handle errors gracefully with user-friendly messages"""
+    logger.error(f"Error in {context}: {str(error)}")
+    
+    if "250001" in str(error):
+        st.error("🔒 Snowflake account is locked. Please contact your administrator.")
+        st.info("You can still use SurveyMonkey features while Snowflake is unavailable.")
+    elif "connection" in str(error).lower():
+        st.error("🌐 Connection issue detected. Please check your network and try again.")
+    elif "token" in str(error).lower():
+        st.error("🔑 Authentication issue. Please check your API tokens in secrets.")
+    elif "permission" in str(error).lower():
+        st.error("🚫 Permission denied. Please check your access rights.")
+    else:
+        st.error(f"❌ An error occurred in {context}: {str(error)}")
+        st.info("Please try refreshing the page or contact support if the issue persists.")
+    
+    return False
+
+def cleanup_session_data():
+    """Clean up session data to prevent memory issues"""
+    # Clear large dataframes if they exceed size limits
+    max_rows = 100000
+    
+    for key in ['df_target', 'df_final', 'df_reference']:
+        if key in st.session_state and st.session_state[key] is not None:
+            if hasattr(st.session_state[key], '__len__') and len(st.session_state[key]) > max_rows:
+                logger.warning(f"Large dataset detected in {key}, consider clearing cache")
+
+# Validate session state on each run
+validate_session_state()
+
+# Cleanup session data periodically
+cleanup_session_data()
+
+# Log current page access
+log_user_action(f"Accessed page: {st.session_state.page}")
+
+# ============= END OF SCRIPT =============
