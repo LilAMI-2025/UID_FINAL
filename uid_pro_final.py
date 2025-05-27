@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 import requests
@@ -729,4 +728,3 @@ elif st.session_state.page == "Matching Dashboard":
     matching_dashboard()
 elif st.session_state.page == "Settings":
     settings()
-```
