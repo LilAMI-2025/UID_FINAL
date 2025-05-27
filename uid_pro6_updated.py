@@ -712,9 +712,9 @@ if st.session_state.page == "home":
             st.write(f"Details: {sf_msg}")
 
 elif st.session_state.page == "view_surveys":
-       st.markdown("## 👁️ SurveyMonkey Survey Viewer")
+    st.markdown("## 👁️ SurveyMonkey Survey Viewer")
     
-    try:
+    try:  # ← This line should be indented with 4 spaces
         token = st.secrets.get("surveymonkey", {}).get("token") or st.secrets.get("surveymonkey", {}).get("access_token")
         if not token:
             st.error("❌ SurveyMonkey token not found in secrets")
@@ -816,9 +816,9 @@ elif st.session_state.page == "view_surveys":
             surveys_df['category'] = surveys_df['title'].apply(categorize_survey)
             st.dataframe(surveys_df[['title', 'id', 'category']], use_container_width=True)
         
-    except Exception as e:
-        st.error(f"❌ Failed to load surveys: {str(e)}")
-        logger.error(f"Survey loading error: {e}")
+    except Exception as e: # ← This should align with the try: above 
+   st.error(f"❌ Failed to load surveys: {str(e)}") 
+   logger.error(f"Survey loading error: {e}")
 
 elif st.session_state.page == "create_survey":
     st.markdown("## ➕ Create New SurveyMonkey Survey")
@@ -1213,5 +1213,4 @@ with footer_col3:
     st.write(f"Semantic threshold: {UID_GOVERNANCE['semantic_similarity_threshold']}")
 
 # ============= END OF SCRIPT =============
-
 
