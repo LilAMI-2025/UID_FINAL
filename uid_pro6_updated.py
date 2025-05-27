@@ -1085,7 +1085,9 @@ def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_
 
 def compute_semantic_matches(df_reference, df_target):
     try:
+        try:
     except Exception as e:
+        st.error(f"❌ Error occurred: {e}")
         st.error(f"❌ Error occurred: {e}")
         model = load_sentence_transformer()
         emb_target = model.encode(df_target["heading_0"].tolist(), convert_to_tensor=True)
