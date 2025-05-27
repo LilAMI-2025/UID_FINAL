@@ -144,7 +144,7 @@ def get_best_question_for_uid(variants):
 def get_snowflake_engine():
     try:
         sf = st.secrets["snowflake"]
-        logger.info(f"Attempting Snowflake connection: {sf.user}")
+        logger.info(f"Attempting Snowflake connection: {sf['user']}")
         for attempt in range(3):
             try:
                 engine = create_engine(
@@ -179,7 +179,14 @@ def get_surveys(token):
             try:
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
-                return response.json().get("data", [])
+                data = response.json().get("data", [])
+                logger.info(f"SurveyMonkey surveys response: {json.dumps(data[:2], indent=2)}")
+                for survey in data:
+                    if 'question_count' not in survey or survey['question_count'] is None:
+                        details = get_survey_details(survey['id'], token)
+                        questions = extract_questions_from_surveymonkey(details)
+                        survey['question_count'] = len(questions)
+                return data
             except requests.RequestException as e:
                 if attempt == 2:
                     raise
@@ -198,7 +205,11 @@ def get_survey_details(survey_id, token):
             try:
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
-                return response.json()
+                data = response.json()
+                logger.info(f"SurveyMonkey details for ID {survey_id}: {json.dumps(data.get('pages', [])[:1], indent=2)}")
+                if not data.get('pages'):
+                    logger.warning(f"No pages found for survey ID {survey_id}")
+                return data
             except requests.RequestException as e:
                 if attempt == 2:
                     raise
@@ -212,15 +223,22 @@ def get_survey_details(survey_id, token):
 def extract_questions_from_surveymonkey(survey_data):
     try:
         questions = []
+        if not survey_data or 'pages' not in survey_data:
+            logger.warning("No pages found in survey data")
+            return questions
         for page in survey_data.get('pages', []):
+            if 'questions' not in page:
+                continue
             for question in page.get('questions', []):
                 if 'headings' in question and question['headings']:
                     question_text = question['headings'][0].get('heading', '')
-                    questions.append({
-                        'question_id': question.get('id'),
-                        'question_text': question_text,
-                        'survey_title': survey_data.get('title', '')
-                    })
+                    if question_text.strip():
+                        questions.append({
+                            'question_id': question.get('id', ''),
+                            'question_text': question_text,
+                            'survey_title': survey_data.get('title', '')
+                        })
+        logger.info(f"Extracted {len(questions)} questions from survey")
         return questions
     except Exception as e:
         logger.error(f"Error extracting SurveyMonkey questions: {e}")
@@ -562,13 +580,21 @@ def view_surveys():
             token = st.text_input("Enter SurveyMonkey API Token", type="password")
         if token:
             surveys = get_surveys(token)
+            if not surveys:
+                st.warning("⚠️ No surveys found or API request failed")
+                return
             for survey in surveys:
-                with st.expander(f"Survey: {survey['title']}"):
-                    st.write(f"ID: {survey['id']}")
-                    st.write(f"Questions: {survey.get('question_count', 'N/A')}")
+                with st.expander(f"Survey: {survey.get('title', 'Untitled Survey')}"):
+                    st.write(f"ID: {survey.get('id', 'N/A')}")
+                    question_count = survey.get('question_count', 0)
+                    st.write(f"Questions: {question_count if question_count > 0 else 'No questions found'}")
+                    if question_count == 0:
+                        st.warning("⚠️ This survey has no questions")
                     if st.button(f"View Details", key=survey['id']):
                         details = get_survey_details(survey['id'], token)
                         questions = extract_questions_from_surveymonkey(details)
+                        if not questions:
+                            st.warning("⚠️ No questions extracted from this survey")
                         st.session_state.questions = questions
                         st.session_state.page = "configure_survey"
                         st.rerun()
@@ -769,3 +795,77 @@ elif st.session_state.page == "Matching Dashboard":
     matching_dashboard()
 elif st.session_state.page == "Settings":
     settings()
+```
+</xai_checkpoint>
+
+### Step 5: Testing Instructions
+1. **Setup**:
+   - Install dependencies: `pip install streamlit pandas requests sqlalchemy snowflake-sqlalchemy sentence-transformers numpy scikit-learn`.
+   - Configure `st.secrets`:
+     ```toml
+     [snowflake]
+     user = "your_snowflake_user"
+     password = "your_snowflake_password"
+     account = "your_snowflake_account"
+     database = "your_database"
+     schema = your_schema"
+     warehouse = "your_warehouse"
+     role = your_role"
+
+     [surveymonkey]
+     token = your_surveymonkey_token"
+     ```
+   - Update `get_qualified_reference_questions`:
+     ```python
+     query = "SELECT HEADING_0, UID, TITLE FROM YOUR_TABLE WHERE HEADING_0 IS NOT NULL"
+     ```
+
+2. **Run the Script**:
+   - Save as `uid_matcher_pro.py`.
+   - Execute: `streamlit run uid_matcher_pro.py`.
+   - Access: `http://localhost:8501`.
+
+3. **Test Workflow**:
+   - **View Surveys**:
+     - Check if question counts are displayed correctly (not "N/A").
+     - Expand surveys and click "View Details" to load questions.
+   - **Configure SurveyMonkey**:
+     - Verify that questions appear in the table.
+     - Run matching and check results.
+   - **Edge Cases**:
+     - Test empty surveys.
+     - Test with an invalid token.
+     - Test large surveys (>100 questions).
+   - **Logs**:
+     - Check logs (terminal or Streamlit Cloud) for API responses and errors.
+     - Look for `Extracted {n} questions from surveys` and survey response structure.
+
+5. **Verify Fixes**:
+   - **N/A Issue**: Confirm question counts are accurate or show "No questions found".
+   - **Previous Fixes**: Ensure `build_optimized_1to1`, `run_uid_match`, etc., work without errors.
+   - **UI**: Verify CSS and navigation are consistent.
+   - **Secrets**: Ensure the SurveyMonkey token is auto-filled from secrets.
+
+### Step 6: Troubleshooting
+1. **Persistent "N/A" Issue**:
+   - **Check Logs**: Open the terminal or Streamlit Cloud logs. Search for `SurveyMonkey surveys response` and `SurveyMonkey details`. Check if `question_count` exists or if pages/questions are empty.
+   - **API Token**: Verify the token has `surveys_read` scope. Test the API manually:
+     ```python
+     import requests
+     token = "your_token"
+     headers = {"Authorization": f"Bearer {token}"}
+     response = requests.get("https://api.surveymonkey.com/v3/surveys", headers=headers)
+     print(response.json())
+     ```
+   - **Survey Status**: Check if surveys are drafts or empty in SurveyMonkey’s dashboard.
+
+2. **No Questions Extracted**:
+   - Ensure surveys have questions in SurveyMonkey.
+   - Check `extract_questions_from_survey` monkey logs for warnings about missing pages or headings.
+
+3. **Cache Issues**:
+   - Clear Streamlit cache: `streamlit cache clear` or click "Clear Cache" in the Streamlit UI (hamburger menu).
+   - Temporarily remove `@st.cache_data` from `get_surveys` for debugging:
+     ```python
+     def get_surveys(token):
+
