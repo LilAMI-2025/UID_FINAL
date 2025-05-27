@@ -1780,6 +1780,34 @@ def render_final_unique_bank_page():
     
     except Exception as e:
         logger.error(f"Final unique bank analysis failed: {e}")
+        st.error(f"❌ Error in analysis: {e}")primary")
+        
+        with col4:
+            conflict_rate = (questions_with_conflicts / total_questions * 100) if total_questions > 0 else 0
+            UIManager.render_metric("Conflict Rate", f"{conflict_rate:.1f}%", "warning")
+        
+        # Tabs for different views
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📊 UID Distribution", 
+            "🎯 Optimal Assignments", 
+            "⚠️ Conflict Analysis", 
+            "📖 Optimized Question Bank"
+        ])
+        
+        with tab1:
+            render_uid_distribution_tab(df_uid_distribution, df_optimal)
+        
+        with tab2:
+            render_optimal_assignments_tab(df_optimal)
+        
+        with tab3:
+            render_conflict_analysis_tab(df_conflicts, df_optimal)
+        
+        with tab4:
+            render_optimized_bank_tab(df_optimized_bank)
+    
+    except Exception as e:
+        logger.error(f"Final unique bank analysis failed: {e}")
         st.error(f"❌ Error in analysis: {e}")
 
 def render_questions_category_page():
