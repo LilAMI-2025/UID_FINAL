@@ -44,7 +44,7 @@ SEMANTIC_THRESHOLD = 0.75
 UID_GOVERNANCE = {'conflict_resolution_threshold': 10}
 ENHANCED_SYNONYM_MAP = {}  # Placeholder for synonym map
 
-# Custom CSS for UI (after set_page_config)
+# Custom CSS for UI
 st.markdown("""
 <style>
     .stButton>button {
@@ -72,7 +72,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Performance Monitoring (defined first to avoid NameError)
+# Performance Monitoring
 def monitor_performance(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
@@ -98,15 +98,21 @@ if 'df_final' not in st.session_state:
     st.session_state.df_final = None
 if 'primary_matching_reference' not in st.session_state:
     st.session_state.primary_matching_reference = None
+if 'last_optimization_time' not in st.session_state:
+    st.session_state.last_optimization_time = None
 
 # Utility Functions
 def enhanced_normalize(text):
     if not isinstance(text, str):
         return ""
-    text = text.lower().strip()
-    text = re.sub(r'[^\w\s]', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text
+    try:
+        text = text.lower().strip()
+        text = re.sub(r'[^\w\s]', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text
+    except Exception as e:
+        logger.error(f"Error normalizing text: {e}")
+        return ""
 
 def score_question_quality(question):
     try:
@@ -138,21 +144,21 @@ def get_best_question_for_uid(variants):
 def get_snowflake_engine():
     try:
         sf = st.secrets["snowflake"]
-        logger.info(f"Attempting Snowflake connection: user={sf.user}, account={sf.account}")
+        logger.info(f"Attempting Snowflake connection: {sf.user}")
         for attempt in range(3):
             try:
                 engine = create_engine(
-                    f"snowflake://{sf.user}:{sf.password}@{sf.account}/{sf.database}/{sf.schema}"
-                    f"?warehouse={sf.warehouse}&role={sf.role}"
+                    f"snowflake://{sf['user']}:{sf['password']}@{sf['account']}/{sf['database']}/{sf['schema']}?"
+                    f"warehouse={sf['warehouse']}&role={sf['role']}"
                 )
                 with engine.connect() as conn:
                     conn.execute(text("SELECT CURRENT_VERSION()"))
                 return engine
             except Exception as e:
                 if attempt == 2:
-                    raise e
+                    raise
                 logger.warning(f"Snowflake connection attempt {attempt+1} failed: {e}. Retrying...")
-                time.sleep(2)
+                time.sleep(1)
     except Exception as e:
         logger.error(f"Snowflake engine creation failed: {e}")
         if "250001" in str(e):
@@ -166,34 +172,42 @@ def get_snowflake_engine():
 # SurveyMonkey Functions
 @st.cache_data(ttl=300)
 def get_surveys(token):
-    url = "https://api.surveymonkey.com/v3/surveys"
-    headers = {"Authorization": f"Bearer {token}"}
-    for attempt in range(3):
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json().get("data", [])
-        except requests.RequestException as e:
-            if attempt == 2:
-                logger.error(f"Failed to fetch surveys: {e}")
-                raise
-            logger.warning(f"SurveyMonkey API attempt {attempt+1} failed: {e}. Retrying...")
-            time.sleep(2)
+    try:
+        url = "https://api.surveymonkey.com/v3/surveys"
+        headers = {"Authorization": f"Bearer {token}"}
+        for attempt in range(3):
+            try:
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                return response.json().get("data", [])
+            except requests.RequestException as e:
+                if attempt == 2:
+                    raise
+                logger.warning(f"SurveyMonkey API attempt {attempt+1} failed: {e}. Retrying...")
+                time.sleep(1)
+    except Exception as e:
+        logger.error(f"Failed to fetch surveys: {e}")
+        st.error(f"❌ Failed to fetch surveys: {str(e)}")
+        return []
 
 def get_survey_details(survey_id, token):
-    url = f"https://api.surveymonkey.com/v3/surveys/{survey_id}/details"
-    headers = {"Authorization": f"Bearer {token}"}
-    for attempt in range(3):
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            if attempt == 2:
-                logger.error(f"Failed to fetch survey details for ID {survey_id}: {e}")
-                raise
-            logger.warning(f"SurveyMonkey details attempt {attempt+1} failed: {e}. Retrying...")
-            time.sleep(2)
+    try:
+        url = f"https://api.surveymonkey.com/v3/surveys/{survey_id}/details"
+        headers = {"Authorization": f"Bearer {token}"}
+        for attempt in range(3):
+            try:
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException as e:
+                if attempt == 2:
+                    raise
+                logger.warning(f"Survey details attempt {attempt+1} failed: {e}. Retrying...")
+                time.sleep(1)
+    except Exception as e:
+        logger.error(f"Failed to fetch survey details for ID {survey_id}: {e}")
+        st.error(f"❌ Failed to fetch survey details: {str(e)}")
+        return {}
 
 def extract_questions_from_surveymonkey(survey_data):
     try:
@@ -234,6 +248,7 @@ def prepare_matching_data():
         return ref_texts, ref_embeddings, uid_lookup
     except Exception as e:
         logger.error(f"Error preparing matching data: {e}")
+        st.error(f"❌ Failed to prepare matching data: {str(e)}")
         return [], None, {}
 
 @st.cache_data(ttl=CACHE_DURATION)
@@ -422,293 +437,335 @@ def build_optimized_1to1_question_bank(df_reference):
         question_analysis = []
         grouped = df_reference.groupby('normalized_question')
         for norm_question, group in grouped:
-            if not norm_question or len(norm_question.strip()) < 2:
+            if not norm_question or len(norm_question.strip()) < 3:
                 continue
             uid_counts = group['uid'].value_counts()
-            all_variants = group['heading_0'].tolist()
-            best_question = get_best_question_for_uid(all_variants
+            all_variants = group['heading_0'].unique()
+            best_question = get_best_question_for_uid(all_variants)
             if not best_question:
                 continue
-            uid_conflicts = [{'uid': uid, 'count': count, 'percentage': (count / len(group)) * 100} for uid, count in uid_counts.items()]
+            uid_conflicts = [{'uid': uid, 'count': count, 'percentage': (count / len(group)) * 100} 
+                             for uid, count in uid_counts.items()]
             uid_conflicts.sort(key=lambda x: x['count'], reverse=True)
-            winner_uid = uid_conflicts['winner'][0]['uid']
-            match['winner'] = wins_conflicts[0]
-            winner_count = uid_conf['winner_count']
-            conflicts = [conflict for conflict in uid_conflicts[1:] if conflict['count'] >= UID_GOVERNANCE['conflict_resolution'])]
+            winner_uid = uid_conflicts[0]['uid']
+            winner_count = uid_conflicts[0]['count']
+            conflicts = [conflict for conflict in uid_conflicts[1:] 
+                         if conflict['count'] >= UID_GOVERNANCE['conflict_resolution_threshold']]
             question_analysis.append({
                 'normalized_question': norm_question,
-                'best_question': matched_results,
-                'winner_uid': winner,
-                'winner_count': winner,
-                'total_occurrences': len(group['count']),
-                'confidence_confidence': len(uid_counts),
-                'total': len(conflicts) > 0,
+                'best_question': best_question,
+                'winner_uid': winner_uid,
+                'winner_count': winner_count,
+                'total_occurrences': len(group),
+                'unique_uids_count': len(uid_counts),
+                'has_conflicts': len(conflicts) > 0,
                 'conflict_count': len(conflicts),
                 'conflicts': conflicts,
-                'all_uid_counts': dict(u),
-                'matches': len(all_variants),
-                'confidence_score': u['confidence_score'],
-                'total_conflicts': sum(c['confidence_score'] for c in conflicts),
-            })            )
-        optimized_df = pd.DataFrame(matches)
+                'all_uid_counts': dict(uid_counts),
+                'variants_count': len(all_variants),
+                'quality_score': score_question_quality(best_question),
+                'conflict_severity': sum(c['count'] for c in conflicts) if conflicts else 0
+            })
+        optimized_df = pd.DataFrame(question_analysis)
+        if not optimized_df.empty:
+            st.session_state.primary_matching_reference = optimized_df
+            st.session_state.last_optimization_time = datetime.now()
+            logger.info(f"Built optimized 1:1 question bank: {len(optimized_df):,} unique questions")
+            st.success(f"✅ Built optimized 1:1 question bank with {len(optimized_df):,} unique questions")
+        else:
+            logger.warning("No valid questions found for optimization")
+            st.warning("⚠️ No valid questions found for optimization")
         return optimized_df
     except Exception as e:
-        logger.error(f"Failed to build optimized match bank: {e}")
-        st.error(f"{failed} Failed to match: {str(e)}")
+        logger.error(f"Failed to build optimized question bank: {e}")
+        st.error(f"❌ Failed to build optimized question bank: {str(e)}")
         return pd.DataFrame()
 
-def run_uid_match(df):
+def run_uid_match(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_MAP, batch_size=BATCH_SIZE):
     try:
-        if not df.empty:
-            return None
-        st.warning("No target data to match")
-        return df
-    df_results = df.to_dict('records')
-    opt_ref = ref_results.get_matching_reference()
-    if not opt_ref.empty:
-        return None
-    logger.info("Using ultra-fast match with 1:1 results")
-        matched_results = ultra_fast_results(df_results)
-    else:
-        logger.info("Using fast matching")
-        return fast_results
-    if matched_results:
-        final_df = pd.DataFrame(matched_results)
-        return final_df
-    else:
-        None
-    else:
-        st.warning("⚠️ No match results generated")
-        return df_results
+        if df_target.empty:
+            st.warning("⚠️ No target questions provided for matching")
+            return df_target
+        sm_questions = df_target.to_dict('records')
+        opt_ref = get_optimized_matching_reference()
+        if not opt_ref.empty:
+            logger.info("Using ultra-fast matching with 1:1 optimization")
+            matched_results = ultra_fast_semantic_matching(sm_questions, use_optimized_reference=True)
+        else:
+            logger.info("Using fast semantic matching")
+            matched_results = fast_semantic_matching(sm_questions, use_cached_data=True)
+        if matched_results:
+            final_df = pd.DataFrame(matched_results)
+            return final_df
+        else:
+            st.warning("⚠️ No matching results generated")
+            return df_target
     except Exception as e:
-        logger.error(f"UID match failed: {e}")
-        st.error(f"❌ Failed to match: {str(e)}")
-        return df_results
+        logger.error(f"UID matching failed: {e}")
+        st.error(f"❌ UID matching failed: {str(e)}")
+        return df_target
 
-# Performance comparison
-def get_performance():
-    return {
-        'matches_loaded': 0 0,
-        'last_time': None
-    }
+# Performance Stats
+def get_performance_stats():
+    try:
+        unique_questions = len(st.session_state.get('primary_matching_reference', pd.DataFrame()))
+        last_optimization = st.session_state.get('last_optimization_time', None)
+        return {
+            'unique_questions_loaded': unique_questions,
+            'last_optimization_time': last_optimization
+        }
+    except Exception as e:
+        logger.error(f"Failed to get performance stats: {e}")
+        return {'unique_questions_loaded': 0, 'last_optimization_time': None}
 
 # Survey Categorization
-def categorize_survey(title):
+def categorize_survey_from_surveymonkey(survey_title):
     try:
+        if not isinstance(survey_title, str):
+            return 'General'
         title_lower = survey_title.lower()
-        if not 'customer' in title_lower:
+        if 'customer' in title_lower:
             return 'Customer Satisfaction'
-        else if 'employee' in title.lower():
-            return 'Employee Satisfaction'
+        elif 'employee' in title_lower:
+            return 'Employee Engagement'
+        elif 'product' in title_lower:
+            return 'Product Feedback'
         else:
-            return 'General Satisfaction'
+            return 'General'
     except Exception as e:
-        logger.error(f"Error in category survey: {e}")
-        return 'General Satisfaction'
+        logger.error(f"Error categorizing survey: {e}")
+        return 'General'
 
 # Page Definitions
 def home_dashboard():
-    st.title("🏗️ UID Match Pro Dashboard")
-    st.markdown("Welcome to UID Match Pro, the tool for matching SurveyMonkey to Snowflake UIDs!")
-    col1, col3 = st.columns(2)
+    st.title("🏠 UID Matcher Pro Dashboard")
+    st.markdown("Welcome to UID Matcher Pro, the ultimate tool for matching SurveyMonkey questions to Snowflake UIDs!")
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown('<div class="metric-card">')
-        st.metric("Matches Processed", 0")  # Placeholder
-        st.markdown('</div>')
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Surveys Processed", "0")  # Placeholder
+        st.markdown('</div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Questions Matched", "0")  # Placeholder
+        st.markdown('</div>', unsafe_allow_html=True)
     with col3:
-        st.markdown('<div class="score-card">')
-        st.metric("Matches Resolved", "0")  # Placeholder
-        st.markdown('</div>')
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Conflicts Resolved", "0")  # Placeholder
+        st.markdown('</div>', unsafe_allow_html=True)
 
-def view_results():
-    st.title("📋 View SurveyMonkey Results")
-    token = st.text_input("Enter SurveyMonkey API Token", type="password")
-    if token:
-        try:
-            results = get_results(token)
-            for result in results:
-                with st.expander(f"Result: {result['title']}"):
-                    st.write(f"ID: {result['id']}")
-                    st.write(f"Questions: {result.get('question_count', 'N/A')}")
-                    if st.button(f"View Details", key=result['id']):
-                        details = get_result_details(result['id'], token)
+def view_surveys():
+    st.title("📋 View SurveyMonkey Surveys")
+    try:
+        token = st.secrets.get("surveymonkey", {}).get("token", "")
+        if not token:
+            token = st.text_input("Enter SurveyMonkey API Token", type="password")
+        if token:
+            surveys = get_surveys(token)
+            for survey in surveys:
+                with st.expander(f"Survey: {survey['title']}"):
+                    st.write(f"ID: {survey['id']}")
+                    st.write(f"Questions: {survey.get('question_count', 'N/A')}")
+                    if st.button(f"View Details", key=survey['id']):
+                        details = get_survey_details(survey['id'], token)
                         questions = extract_questions_from_surveymonkey(details)
                         st.session_state.questions = questions
-                        st.session_state.page = "configure_result"
+                        st.session_state.page = "configure_survey"
                         st.rerun()
-        except Exception as e:
-            st.error(f"❌ Failed to fetch results: {str(e)}")
-
-def create_result():
-    st.title("✨ Create New Result")
-    st.info("Result creation is not implemented in this version.")
-
-def configure_result():
-    st.title("⚙️ Configure Result")
-    sf_result = True
-    try:
-        engine = get_result_engine()
-        st.session_state.engine()
-    except Exception as e:
-        sf_result = []
-        st.warning.error("⚠️ Result to Snowflake connection failed")
-        return []
-
-    if 'results' in st.session_state:
-        matched_df = pd.DataFrame(st.session_state['results'])
-        st.markdown("### 📊 Result Data")
-        st.data_frame(df[['title', 'question_text']])
-
-        if sf_result:
-            st.markdown("### 🔗 Result Assignment Process")
-            performance_results = get_performance_results()
-            match_results = ref_results.get_matching_results()
-            if not match_results.empty:
-                st.success(f"✅ {results} match results: {len(match_results)} results")
-            else if performance_results['match_count'] > 0:
-                st.success("✅ Standard result match ready!")
-            else:
-                st.warning("⚠️ No result matches! Matching will fail.")
-                if st.button("🏗️ Build for results"):
-                    st.session_state.page_results = "build_results""
-                    return st.rerun()
-            st.markdown("### 💥 Performance Results")
-            results1, col2, col3 = st.columns()
-            with results1:
-                st.markdown("** ❌ Standard Results**")
-                st.markdown("● Loads Results")
-                st.markdown("● 2-5 min/Result")
-                st.markdown("● Memory intensive")
-                st.markdown("● Appends possible")
-            with col2:
-                st.markdown("** ✅ Fast Results**")
-                st.markdown("● Uses cached results")
-                st.markdown("● 10-30 sec")
-                st.markdown("● Memory efficient")
-                st.markdown("● Stable")
-            with col3:
-                st.markdown("** 🎯 Ultra-Fast Results**")
-                st.markdown("● Uses optimized results")
-                st.markdown("● 2-5 sec")
-                st.markdown("● Optimized")
-                st.markdown("● Conflict-free")
-
-            match_results_approach = st.radio(
-                "Select match approach results:",
-                [
-                    "🎯 Ultra-Fast Results (Optimized Match)",
-                    "✅ Fast Results (Standard)",
-                    "❌ Standard Results (Slow)"
-                ]
-            )
-
-            use_batch = False
-            if len(match_results) > 0:
-                batch_results = True
-                st.checkbox("Use batch results",
-                value=batch_results,
-                help="Recommended for large datasets")
-
-            if st.button("🔄 Run Match Results"):
-                try:
-                    if match_results == '🎯 Ultra-Fast Results':
-                        if not match_results.empty:
-                            st.error("❌ Optimized match not built.")
-                            if st.button("🎯 Build Optimized Results"):
-                                st.session_state.page_results = "build optimized"
-                                return st.rerun()
-                        else:
-                            with st.progress("🔄 Running Ultra-Fast match..."):
-                                matched_results = ultra_results(match_results)
-                    else if match_results == 'Fast Results':
-                        with st.progress("🔄 Fast Results..."):
-                            matched_results = fast_results(match_results)
-                    else:
-                        with st.progress("🔄 Standard Results..."):
-                            matched_results = perform_results(match_results)
-
-                    if results_matched_results:
-                        matched_df = pd.DataFrame(matched_results)
-                        st.session_state['matched_df_results'] = matched_results
-                        st.success("✅ Results matched!")
-                        high_conf = len(matched_df['high_confidence'])
-                        low_conf = len(matched_df['low_confidence'])
-                        conflicts = len(matched_results['conflicts_resolved'])
-
-                        col1, col3, col4 = st.success_columns(3)
-                        with col1:
-                            st.metric("🎯 High", high_conf)
-                        with col3:
-                            st.metric("⚠️ Low", low_conf)
-                        with col4:
-                            st.metric("🔥 Conflicts", conflicts)
-
-                        st.markdown("### 📋 Sample Results")
-                        sample_results = matched_results.head(5)
-                        for i, row in enumerate(sample_results):
-                            st.write(f"{i+1}: {row['result']}")
-                except Exception as e:
-                    logger.error(f"Error in results: {e}")
-                    st.error(f"Error: {str(e)}")
         else:
-            st.error("❌ No Snowflake connection")
-            st.info("Configure results available, but no match requires Snowflake.")
-    else:
-        st.warning("⚠️ No results loaded.")
-
-def build_results():
-    st.title_results("Build Results")
-    try:
-        ref_results = []
-        if not ref_results.empty:
-            return []
-        st.success(f"✅ Loaded {len(ref_results)} results")
-        if st.button("🔄 Refresh Results"):
-            st.cache_results.clear()
-            return st.rerun()
+            st.warning("⚠️ No SurveyMonkey token provided")
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        logger.error(f"Failed to fetch surveys: {e}")
+        st.error(f"❌ Failed to fetch surveys: {str(e)}")
 
-def optimized_results():
-    st.title("Optimized Results")
+def create_survey():
+    st.title("✨ Create New Survey")
+    st.info("Survey creation is not implemented in this version.")
+
+def configure_survey():
+    st.title("⚙️ Configure Survey")
+    sf_status = True
     try:
-        ref_results = []
-        if not ref_results.empty:
-            return []
-        if st.button("🚗 Build Optimized Results"):
-            with st.progress("Building optimized results..."):
-                optimized_results = build_optimized_results(ref_results)
-                st.session_state['optimized_results'] = optimized_results
-                return st.success(f"✅ Built optimized with {len(optimized_results)} results")
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
-
-def results_dashboard():
-    st.title("📊 Results Dashboard")
-    if 'matched_df_results' in st.session_state:
-        df_results = st.session_state['matched_df_results']
-        st.data_frame(df_results)
+        engine = get_snowflake_engine()
+        st.session_state.snowflake_engine = engine
+    except Exception:
+        sf_status = False
+        st.warning("⚠️ Snowflake connection not established")
+    
+    if 'questions' in st.session_state and st.session_state.questions:
+        df_target = pd.DataFrame(st.session_state.questions)
+        st.markdown("### 📋 Survey Questions")
+        st.dataframe(df_target[['survey_title', 'question_text']])
+        
+        if sf_status:
+            st.markdown("### 🔄 UID Assignment Process")
+            perf_stats = get_performance_stats()
+            opt_ref = get_optimized_matching_reference()
+            if not opt_ref.empty:
+                st.success(f"✅ Optimized 1:1 reference ready: {len(opt_ref):,} conflict-resolved questions")
+            elif perf_stats['unique_questions_loaded'] > 0:
+                st.success("✅ Standard optimization ready! Consider building 1:1 optimization for best performance.")
+            else:
+                st.warning("⚠️ Question Bank not optimized! Matching will be slower.")
+                if st.button("🏗️ Build Question Bank for Better Performance"):
+                    st.session_state.page = "build_question_bank"
+                    st.rerun()
+            
+            st.markdown("### ⚡ Performance Comparison")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown("**❌ Standard Matching**")
+                st.markdown("• Loads 1M+ records")
+                st.markdown("• 2-5 minutes per matching")
+                st.markdown("• Memory intensive")
+                st.markdown("• App crashes possible")
+            with col2:
+                st.markdown("**✅ Fast Matching**")
+                st.markdown("• Uses cached embeddings")
+                st.markdown("• 10-30 seconds per matching")
+                st.markdown("• Memory efficient")
+                st.markdown("• Stable performance")
+            with col3:
+                st.markdown("**🎯 Ultra-Fast Matching**")
+                st.markdown("• Uses 1:1 optimized bank")
+                st.markdown("• 2-5 seconds per matching")
+                st.markdown("• Highly optimized")
+                st.markdown("• Conflict-free results")
+            
+            matching_approach = st.radio(
+                "Select matching approach:",
+                [
+                    "🎯 Ultra-Fast Matching (1:1 Optimized, Recommended)",
+                    "✅ Fast Matching (Standard)",
+                    "❌ Standard Matching (Slowest)"
+                ],
+                help="Ultra-fast uses conflict-resolved 1:1 mapping for maximum speed and accuracy"
+            )
+            
+            use_batching = st.checkbox(
+                "Use batch processing",
+                value=len(df_target) > BATCH_SIZE,
+                help="Recommended for large datasets (>1000 questions)"
+            )
+            
+            if st.button("🚀 Run UID Matching", type="primary"):
+                try:
+                    df_reference = get_cached_reference_questions()
+                    if matching_approach == "🎯 Ultra-Fast Matching (1:1 Optimized, Recommended)":
+                        if opt_ref.empty:
+                            st.error("❌ 1:1 optimization not built yet. Please build it first.")
+                            if st.button("🎯 Build 1:1 Optimization Now"):
+                                st.session_state.page = "optimized_question_bank"
+                                st.rerun()
+                        else:
+                            with st.spinner("🎯 Running ULTRA-FAST semantic matching with 1:1 optimization..."):
+                                matched_results = batch_process_matching(df_target.to_dict('records'), batch_size=BATCH_SIZE) if use_batching else ultra_fast_semantic_matching(df_target.to_dict('records'), use_optimized_reference=True)
+                    
+                    elif matching_approach == "✅ Fast Matching (Standard)":
+                        with st.spinner("✅ Running FAST semantic matching with pre-computed embeddings..."):
+                            matched_results = batch_process_matching(df_target.to_dict('records'), batch_size=BATCH_SIZE) if use_batching else fast_semantic_matching(df_target.to_dict('records'), use_cached_data=True)
+                    
+                    else:
+                        with st.spinner("❌ Running standard semantic matching (slower)..."):
+                            matched_results = perform_semantic_matching(df_target.to_dict('records'), df_reference)
+                    
+                    if matched_results:
+                        matched_df = pd.DataFrame(matched_results)
+                        st.session_state.df_final = matched_df
+                        st.success(f"✅ UID matching completed!")
+                        high_conf = len(matched_df[matched_df['match_confidence'] == 'High'])
+                        medium_conf = len(matched_df[matched_df['match_confidence'] == 'Medium'])
+                        low_conf = len(matched_df[matched_df['match_confidence'] == 'Low'])
+                        conflicts_resolved = len(matched_df[matched_df.get('conflict_resolved', False) == True]) if 'conflict_resolved' in matched_df else 0
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("🎯 High Confidence", high_conf)
+                        with col2:
+                            st.metric("⚠️ Medium Confidence", medium_conf)
+                        with col3:
+                            st.metric("❌ Low/No Match", low_conf)
+                        with col4:
+                            st.metric("🔥 Conflicts Resolved", conflicts_resolved)
+                        
+                        st.markdown("### 📋 Sample Matching Results")
+                        sample_matched = matched_df[matched_df['matched_uid'].notna()].head(5)
+                        for idx, row in sample_matched.iterrows():
+                            conflict_badge = " 🔥 CONFLICT RESOLVED" if row.get('conflict_resolved', False) else ""
+                            authority_info = f" (Authority: {row.get('uid_authority', 0)} records)" if row.get('uid_authority', 0) > 0 else ""
+                            with st.expander(f"Match {idx+1}: UID {row['matched_uid']} (Confidence: {row['match_confidence']}){conflict_badge}"):
+                                st.write(f"**SurveyMonkey Question:** {row['question_text']}")
+                                st.write(f"**Matched Snowflake Question:** {row['matched_heading_0']}")
+                                st.write(f"**Match Score:** {row['match_score']:.3f}")
+                                if row.get('conflict_resolved', False):
+                                    st.write(f"**UID Authority:** {row['uid_authority']} records{authority_info}")
+                                    st.info("🔥 This question had multiple competing UIDs. Assigned to highest-count UID.")
+                    else:
+                        st.error("❌ No matching results generated")
+                except Exception as e:
+                    logger.error(f"UID matching failed: {e}")
+                    st.error(f"❌ UID matching failed: {str(e)}")
+        else:
+            st.warning("❌ Snowflake connection required for UID assignment")
+            st.info("Configure surveys is available, but UID matching requires Snowflake connection")
     else:
-        st.warning("⚠️ No results available.")
+        st.warning("⚠️ No survey questions loaded. Please view and select a survey first.")
 
-def settings_results():
-    st.title("⚙️ Results Settings")
-    st.info("Settings not implemented.")
+def build_question_bank():
+    st.title("🏗️ Build Question Bank")
+    try:
+        df_reference = get_cached_reference_questions()
+        if not df_reference.empty:
+            st.success(f"✅ Loaded {len(df_reference):,} reference questions")
+            if st.button("🔄 Refresh Question Bank"):
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            st.warning("⚠️ No reference questions loaded")
+    except Exception as e:
+        st.error(f"❌ Failed to build question bank: {str(e)}")
+
+def optimized_question_bank():
+    st.title("🎯 Build Optimized 1:1 Question Bank")
+    try:
+        df_reference = get_cached_reference_questions()
+        if not df_reference.empty:
+            if st.button("🚀 Build Optimized 1:1 Question Bank"):
+                with st.spinner("Building optimized question bank..."):
+                    optimized_df = build_optimized_1to1_question_bank(df_reference)
+                    if not optimized_df.empty:
+                        st.success(f"✅ Optimization complete!")
+        else:
+            st.warning("⚠️ No reference questions loaded")
+    except Exception as e:
+        st.error(f"❌ Failed to build optimized question bank: {str(e)}")
+
+def matching_dashboard():
+    st.title("📊 Matching Dashboard")
+    if 'df_final' in st.session_state and st.session_state.df_final is not None:
+        df = st.session_state.df_final
+        st.dataframe(df)
+    else:
+        st.warning("⚠️ No matching results available. Run UID matching first.")
+
+def settings():
+    st.title("⚙️ Settings")
+    st.info("Settings page not implemented in this version.")
 
 # Page Routing
 if st.session_state.page == "Home Dashboard":
     home_dashboard()
-elif st.session_state.page == "View Results":
-    view_results()
-elif st.session_state.page == "Create Result":
-    create_result()
-elif st.session_state.page == "Configure Result":
-    configure_result()
-elif st.session_state.page == "Build Results":
-    build_results()
-elif st.session_state.page == "Optimized Results":
-    optimized_results()
-elif st.session_state.page == "Results Dashboard":
-    results_dashboard()
-elif st.session_state.page == "Settings Results":
-    settings_results()
+elif st.session_state.page == "View Surveys":
+    view_surveys()
+elif st.session_state.page == "Create Survey":
+    create_survey()
+elif st.session_state.page == "Configure Survey":
+    configure_survey()
+elif st.session_state.page == "Build Question Bank":
+    build_question_bank()
+elif st.session_state.page == "Optimized 1:1 Question Bank":
+    optimized_question_bank()
+elif st.session_state.page == "Matching Dashboard":
+    matching_dashboard()
+elif st.session_state.page == "Settings":
+    settings()
