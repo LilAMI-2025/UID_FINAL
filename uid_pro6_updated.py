@@ -714,7 +714,7 @@ if st.session_state.page == "home":
 elif st.session_state.page == "view_surveys":
     st.markdown("## 👁️ SurveyMonkey Survey Viewer")
     
-    try:  # ← This line should be indented with 4 spaces
+    try:
         token = st.secrets.get("surveymonkey", {}).get("token") or st.secrets.get("surveymonkey", {}).get("access_token")
         if not token:
             st.error("❌ SurveyMonkey token not found in secrets")
@@ -803,7 +803,7 @@ elif st.session_state.page == "view_surveys":
                                 "text/csv",
                                 use_container_width=True
                             )
-                        
+                
                 except Exception as e:
                     st.error(f"❌ Error analyzing survey: {str(e)}")
                     logger.error(f"Survey analysis error: {e}")
@@ -815,10 +815,10 @@ elif st.session_state.page == "view_surveys":
             # Add survey categories
             surveys_df['category'] = surveys_df['title'].apply(categorize_survey)
             st.dataframe(surveys_df[['title', 'id', 'category']], use_container_width=True)
-        
-    except Exception as e: # ← This should align with the try: above 
-   st.error(f"❌ Failed to load surveys: {str(e)}") 
-   logger.error(f"Survey loading error: {e}")
+    
+    except Exception as e:
+        st.error(f"❌ Failed to load surveys: {str(e)}")
+        logger.error(f"Survey loading error: {e}")
 
 elif st.session_state.page == "create_survey":
     st.markdown("## ➕ Create New SurveyMonkey Survey")
@@ -879,11 +879,11 @@ elif st.session_state.page == "create_survey":
                                 st.rerun()
                     else:
                         st.error("❌ Failed to create survey - no ID returned")
-                        
+                
                 except Exception as e:
                     st.error(f"❌ Failed to create survey: {str(e)}")
                     logger.error(f"Survey creation error: {e}")
-        
+    
     except Exception as e:
         st.error(f"❌ Error in survey creation page: {str(e)}")
         logger.error(f"Create survey page error: {e}")
@@ -949,7 +949,7 @@ elif st.session_state.page == "view_question_bank":
             if st.button("⭐ Create Unique Questions Bank", use_container_width=True):
                 st.session_state.page = "unique_question_bank"
                 st.rerun()
-        
+    
     except Exception as e:
         st.error(f"❌ Failed to load question bank: {str(e)}")
         logger.error(f"Question bank loading error: {e}")
@@ -1018,7 +1018,7 @@ elif st.session_state.page == "unique_question_bank":
             if st.button("🧹 Data Quality Analysis", use_container_width=True):
                 st.session_state.page = "data_quality"
                 st.rerun()
-        
+    
     except Exception as e:
         st.error(f"❌ Failed to create unique questions bank: {str(e)}")
         logger.error(f"Unique questions bank error: {e}")
@@ -1067,7 +1067,7 @@ elif st.session_state.page == "categorized_questions":
         with col2:
             st.markdown("**UIDs by Category**")
             st.bar_chart(category_stats['Unique UIDs'])
-        
+    
     except Exception as e:
         st.error(f"❌ Failed to categorize questions: {str(e)}")
         logger.error(f"Categorization error: {e}")
@@ -1178,7 +1178,7 @@ elif st.session_state.page == "data_quality":
             df_reference['survey_category'] = df_reference['survey_title'].apply(categorize_survey)
             category_counts = df_reference['survey_category'].value_counts()
             st.bar_chart(category_counts)
-        
+    
     except Exception as e:
         st.error(f"❌ Data quality analysis failed: {str(e)}")
         logger.error(f"Data quality error: {e}")
@@ -1213,4 +1213,3 @@ with footer_col3:
     st.write(f"Semantic threshold: {UID_GOVERNANCE['semantic_similarity_threshold']}")
 
 # ============= END OF SCRIPT =============
-
