@@ -1085,6 +1085,8 @@ def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_
 
 def compute_semantic_matches(df_reference, df_target):
     try:
+    except Exception as e:
+        st.error(f"❌ Error occurred: {e}")
         model = load_sentence_transformer()
         emb_target = model.encode(df_target["heading_0"].tolist(), convert_to_tensor=True)
         emb_ref = model.encode(df_reference["heading_0"].tolist(), convert_to_tensor=True)
@@ -1414,3 +1416,5 @@ elif st.session_state.page == "unique_question_bank":
                 
                 # Create unique questions bank
                 unique_questions_df = create_unique_questions_bank(df_reference)
+    except Exception as e:
+        st.error(f"❌ Failed to load question bank: {e}")
