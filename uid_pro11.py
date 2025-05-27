@@ -696,7 +696,7 @@ def enhanced_configure_survey_page():
     
     df_target = None
     
-    # Handle different input methods
+  # Handle different input methods
     if input_method == "Upload CSV File":
         uploaded_file = st.file_uploader("Choose CSV file", type="csv")
         if uploaded_file:
@@ -1176,10 +1176,11 @@ def process_questions_without_reference(df_target):
     
     return df_processed
 
-# Enhanced unique questions bank creation
+# Enhanced unique questions bank creation (fixed for correct data structure)
 def create_enhanced_unique_questions_bank(df_reference):
     """
     Enhanced unique questions bank with governance compliance and semantic analysis
+    Fixed to work with Snowflake data structure (HEADING_0, UID only)
     """
     if df_reference.empty:
         return pd.DataFrame()
@@ -1207,17 +1208,9 @@ def create_enhanced_unique_questions_bank(df_reference):
         # Detect question pattern
         question_pattern = detect_question_pattern(best_question)
         
-        # Get survey information
-        survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
-        
-        # Determine category from survey titles
-        categories = []
-        for title in survey_titles:
-            category = categorize_survey(title)
-            if category not in categories:
-                categories.append(category)
-        
-        primary_category = categories[0] if len(categories) == 1 else "Mixed" if categories else "Unknown"
+        # Since we don't have survey_title from Snowflake, we'll categorize based on question content
+        # Try to infer category from the question itself
+        inferred_category = categorize_question_by_content(best_question)
         
         # Calculate quality metrics
         quality_score = score_question_quality(best_question)
@@ -1245,8 +1238,8 @@ def create_enhanced_unique_questions_bank(df_reference):
             'total_variants': len(uid_questions),
             'question_length': len(str(best_question)),
             'question_words': len(str(best_question).split()),
-            'survey_category': primary_category,
-            'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
+            'survey_category': inferred_category,  # Inferred from question content
+            'survey_titles': 'Inferred from Snowflake Data',  # Default since not available
             'quality_score': quality_score,
             'governance_compliant': governance_compliant,
             'question_pattern_category': question_pattern['category'],
@@ -1270,6 +1263,53 @@ def create_enhanced_unique_questions_bank(df_reference):
             unique_df = unique_df.sort_values('uid')
     
     return unique_df
+
+def categorize_question_by_content(question_text):
+    """
+    Categorize question based on content analysis since survey_title is not available
+    """
+    if not question_text:
+        return "Unknown"
+    
+    text_lower = question_text.lower()
+    
+    # Application/Registration patterns
+    if any(word in text_lower for word in ['apply', 'application', 'register', 'signup', 'join', 'eligibility']):
+        return 'Application'
+    
+    # Pre-programme/Baseline patterns
+    if any(word in text_lower for word in ['baseline', 'before', 'prior', 'initial', 'pre-', 'preparation']):
+        return 'Pre programme'
+    
+    # Enrollment/Onboarding patterns
+    if any(word in text_lower for word in ['enrollment', 'onboarding', 'welcome', 'start', 'begin']):
+        return 'Enrollment'
+    
+    # Progress/Review patterns
+    if any(word in text_lower for word in ['progress', 'milestone', 'checkpoint', 'review', 'assessment']):
+        return 'Progress Review'
+    
+    # Impact/Outcome patterns
+    if any(word in text_lower for word in ['impact', 'outcome', 'result', 'effect', 'change', 'transformation', 'improvement']):
+        return 'Impact'
+    
+    # GROW patterns
+    if 'grow' in text_lower:
+        return 'GROW'
+    
+    # Feedback patterns
+    if any(word in text_lower for word in ['feedback', 'satisfaction', 'rating', 'evaluation', 'opinion']):
+        return 'Feedback'
+    
+    # Pulse/Quick check patterns
+    if any(word in text_lower for word in ['pulse', 'quick', 'brief', 'snapshot', 'check-in']):
+        return 'Pulse'
+    
+    # Demographic patterns
+    if any(word in text_lower for word in ['age', 'gender', 'education', 'experience', 'role', 'position', 'sector', 'industry', 'location']):
+        return 'Demographic'
+    
+    return "Other"
 
 # Cached Resources (enhanced versions)
 @st.cache_resource
@@ -1804,18 +1844,18 @@ def calculate_matched_percentage(df_final):
     percentage = (len(matched_questions) / len(eligible_questions)) * 100
     return round(percentage, 2)
 
-# Enhanced Snowflake Queries (keeping existing)
+# Fixed Snowflake Queries (using correct column structure)
 def run_snowflake_reference_query_all():
-    """Fetch ALL reference questions from Snowflake with pagination"""
+    """Fetch ALL reference questions from Snowflake with pagination - fixed for correct columns"""
     all_data = []
     limit = 10000
     offset = 0
     
     while True:
         query = """
-            SELECT HEADING_0, UID, SURVEY_TITLE
+            SELECT HEADING_0, UID
             FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-            WHERE UID IS NOT NULL
+            WHERE UID IS NOT NULL AND HEADING_0 IS NOT NULL
             ORDER BY CAST(UID AS INTEGER) ASC
             LIMIT :limit OFFSET :offset
         """
@@ -1825,6 +1865,9 @@ def run_snowflake_reference_query_all():
             
             if result.empty:
                 break
+                
+            # Add default survey_title for compatibility with existing code
+            result['survey_title'] = 'Unknown Survey'
                 
             all_data.append(result)
             offset += limit
@@ -1839,7 +1882,7 @@ def run_snowflake_reference_query_all():
             if "250001" in str(e):
                 st.warning("🔒 Cannot fetch Snowflake data: User account is locked.")
             elif "invalid identifier" in str(e).lower():
-                st.warning("⚠️ Snowflake query failed due to invalid column.")
+                st.warning("⚠️ Snowflake query failed due to invalid column. Using available columns only.")
             raise
     
     if all_data:
@@ -1850,16 +1893,50 @@ def run_snowflake_reference_query_all():
         logger.warning("No reference data fetched")
         return pd.DataFrame()
 
-def run_snowflake_target_query():
+def run_snowflake_reference_query(limit=10000, offset=0):
+    """Original function for backward compatibility - fixed"""
     query = """
-        SELECT DISTINCT HEADING_0, SURVEY_TITLE
+        SELECT HEADING_0, UID
         FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-        WHERE UID IS NULL AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
+        WHERE UID IS NOT NULL AND HEADING_0 IS NOT NULL
+        ORDER BY CAST(UID AS INTEGER) ASC
+        LIMIT :limit OFFSET :offset
+    """
+    try:
+        with get_snowflake_engine().connect() as conn:
+            result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
+        
+        # Add default survey_title for compatibility
+        if not result.empty:
+            result['survey_title'] = 'Unknown Survey'
+        
+        return result
+    except Exception as e:
+        logger.error(f"Snowflake reference query failed: {e}")
+        if "250001" in str(e):
+            st.warning("🔒 Cannot fetch Snowflake data: User account is locked.")
+        elif "invalid identifier" in str(e).lower():
+            st.warning("⚠️ Snowflake query failed due to invalid column. Contact admin to verify table schema.")
+        raise
+
+def run_snowflake_target_query():
+    """Fixed target query - focus on questions without UIDs"""
+    query = """
+        SELECT DISTINCT HEADING_0
+        FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+        WHERE UID IS NULL 
+        AND HEADING_0 IS NOT NULL
+        AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
         ORDER BY HEADING_0
     """
     try:
         with get_snowflake_engine().connect() as conn:
             result = pd.read_sql(text(query), conn)
+        
+        # Add default survey_title for compatibility
+        if not result.empty:
+            result['survey_title'] = 'Unknown Survey'
+        
         return result
     except Exception as e:
         logger.error(f"Snowflake target query failed: {e}")
@@ -2431,3 +2508,7 @@ def detect_uid_conflicts(df_target):
         lambda x: "⚠️ Conflict" if pd.notnull(x) and x in duplicate_uids else ""
     )
     return df_target
+
+
+
+
