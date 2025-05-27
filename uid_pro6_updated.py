@@ -15,16 +15,6 @@ from collections import defaultdict, Counter
 import hashlib
 
 # Setup
-
-# Page Selector
-st.sidebar.title("Navigation")
-pages = [
-    "Home",
-    "UID Dominance & Conflict",
-    "Categorized Question Viewer"
-]
-selected_page = st.sidebar.selectbox("Go to", pages)
-
 st.set_page_config(
     page_title="UID Matcher Pro", 
     layout="wide",
@@ -1778,74 +1768,69 @@ elif st.session_state.page == "categorized_questions":
 
 
 
-# ---------------------- PAGE: UID Dominance and Conflict Dashboard ----------------------
-if selected_page == "UID Dominance & Conflict":
-
-    st.markdown("<div class='main-header'>UID Dominance & Conflict Dashboard</div>", unsafe_allow_html=True)
-
-    uploaded_qb = st.file_uploader("Upload Question Bank (CSV/Excel)", type=["csv", "xlsx"])
-
+# ---------------- UID Dominance & Conflict Assignment ----------------
+with st.expander("🔍 UID Dominance & Conflict Assignment", expanded=False):
+    uploaded_qb = st.file_uploader("Upload Question Bank File (CSV/Excel)", type=["csv", "xlsx"], key="uid_conflict_qb")
     if uploaded_qb:
-        if uploaded_qb.name.endswith('.csv'):
+        if uploaded_qb.name.endswith(".csv"):
             df_qb = pd.read_csv(uploaded_qb)
         else:
             df_qb = pd.read_excel(uploaded_qb)
 
-        # Check if required columns exist
-        required_cols = {'UID', 'heading_0'}
-        if not required_cols.issubset(df_qb.columns):
+        if not {'UID', 'heading_0'}.issubset(df_qb.columns):
             st.error("The uploaded file must contain 'UID' and 'heading_0' columns.")
         else:
-            # Count UIDs per question
-            question_uid_counts = df_qb.groupby(['heading_0', 'UID']).size().reset_index(name='count')
-            best_uid_per_question = question_uid_counts.sort_values(['heading_0', 'count'], ascending=[True, False]).drop_duplicates('heading_0')
+            st.success("File uploaded and validated!")
 
-            # Conflict detection
-            conflict_summary = question_uid_counts.groupby('heading_0')['count'].apply(lambda x: x.nlargest(2)).reset_index()
-            conflict_summary = conflict_summary.groupby('heading_0')['count'].apply(list).reset_index()
+            # Count frequency of UID per heading
+            freq_table = df_qb.groupby(['heading_0', 'UID']).size().reset_index(name='count')
+            best_uid = freq_table.sort_values(['heading_0', 'count'], ascending=[True, False]).drop_duplicates('heading_0')
+
+            # Detect near conflicts
+            conflict_check = freq_table.groupby('heading_0')['count'].apply(lambda x: x.nlargest(2)).reset_index()
+            conflict_summary = conflict_check.groupby('heading_0')['count'].apply(list).reset_index()
             conflict_summary['conflict'] = conflict_summary['count'].apply(lambda x: len(x) > 1 and abs(x[0] - x[1]) < 100)
 
-            final_table = best_uid_per_question.merge(conflict_summary[['heading_0', 'conflict']], on='heading_0', how='left')
-            final_table['conflict'] = final_table['conflict'].fillna(False)
+            final_assignments = best_uid.merge(conflict_summary[['heading_0', 'conflict']], on='heading_0', how='left')
+            final_assignments['conflict'] = final_assignments['conflict'].fillna(False)
 
-            st.subheader("Final UID Assignment Table")
-            st.dataframe(final_table[['heading_0', 'UID', 'count', 'conflict']])
+            st.markdown("### ✅ Final UID Assignments")
+            st.dataframe(final_assignments[['heading_0', 'UID', 'count', 'conflict']])
 
-            st.subheader("Conflict Summary (Top 10)")
-            conflict_only = final_table[final_table['conflict'] == True].sort_values('count', ascending=False).head(10)
-            st.table(conflict_only[['heading_0', 'UID', 'count']])
+            st.markdown("### ⚠️ Top 10 Conflicts")
+            conflict_table = final_assignments[final_assignments['conflict'] == True].sort_values('count', ascending=False).head(10)
+            st.dataframe(conflict_table)
 
-            csv = final_table.to_csv(index=False).encode('utf-8')
-            st.download_button("Download UID Assignment CSV", csv, "uid_dominance_assignment.csv", "text/csv")
+            csv_download = final_assignments.to_csv(index=False).encode('utf-8')
+            st.download_button("⬇️ Download Final Assignments CSV", csv_download, file_name="uid_assignments.csv", mime="text/csv")
 
 
 
-# ---------------------- PAGE: Categorized Survey Question Viewer ----------------------
-if selected_page == "Categorized Question Viewer":
-
-    st.markdown("<div class='main-header'>SurveyMonkey Categorized Questions</div>", unsafe_allow_html=True)
-
-    uploaded_survey = st.file_uploader("Upload Survey Data (CSV/Excel)", type=["csv", "xlsx"])
-
+# ---------------- Categorized Survey Question Viewer ----------------
+with st.expander("📊 Categorize SurveyMonkey Questions by Title", expanded=False):
+    uploaded_survey = st.file_uploader("Upload SurveyMonkey File (CSV/Excel)", type=["csv", "xlsx"], key="survey_cat_file")
     if uploaded_survey:
-        if uploaded_survey.name.endswith('.csv'):
+        if uploaded_survey.name.endswith(".csv"):
             df_survey = pd.read_csv(uploaded_survey)
         else:
             df_survey = pd.read_excel(uploaded_survey)
 
         if not {'survey_title', 'heading_0'}.issubset(df_survey.columns):
-            st.error("The file must have 'survey_title' and 'heading_0' columns.")
+            st.error("File must contain 'survey_title' and 'heading_0' columns.")
         else:
+            st.success("Survey data uploaded!")
+
+            # Categorize by title
             category_map = {}
             for category, keywords in SURVEY_CATEGORIES.items():
-                match_mask = df_survey['survey_title'].str.lower().apply(lambda title: any(kw.lower() in title for kw in keywords))
-                category_map[category] = df_survey[match_mask]
+                mask = df_survey['survey_title'].str.lower().apply(lambda t: any(k.lower() in t for k in keywords))
+                category_map[category] = df_survey[mask]
 
-            selected_category = st.selectbox("Select Survey Category", list(category_map.keys()))
-            if selected_category:
-                filtered_questions = category_map[selected_category]['heading_0'].drop_duplicates().reset_index(drop=True)
-                st.write(f"Unique Questions under **{selected_category}** category:")
-                st.dataframe(filtered_questions)
+            selected_cat = st.selectbox("Select Category", list(category_map.keys()))
+            if selected_cat:
+                unique_qs = category_map[selected_cat]['heading_0'].drop_duplicates().reset_index(drop=True)
+                st.markdown(f"### 📌 Unique Questions for `{selected_cat}`")
+                st.dataframe(unique_qs)
 
-                if st.button("Trigger UID Assignment Workflow"):
-                    st.success(f"UID assignment flow triggered for {len(filtered_questions)} questions under '{selected_category}'")
+                if st.button("🚀 Trigger UID Assignment Flow"):
+                    st.success(f"Assignment trigger initialized for {len(unique_qs)} questions.")
