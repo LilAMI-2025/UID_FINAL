@@ -2071,16 +2071,467 @@ def render_conflict_analysis_tab(df_conflicts, df_optimal):
     with col3:
         UIManager.render_metric("Medium Severity (2 questions)", str(medium_severity_conflicts), "info")
     
-    # Detailed conflict breakdown
-    st.markdown("#### 🔍 Conflict Details")
+    # Add these functions to the end of your uid_pro21.py file (before the if __name__ == "__main__":)
+
+        with st.expander(f"{severity_color} UID {uid} - {questions_count} questions ({total_usage} total usage)"):
+            assignments_df = pd.DataFrame(conflict['ASSIGNMENTS'])
+            assignments_df = assignments_df.sort_values('count', ascending=False)
+            
+            # Show which question should get this UID (highest count)
+            recommended_question = assignments_df.iloc[0]['question']
+            recommended_count = assignments_df.iloc[0]['count']
+            
+            st.markdown(f"**Recommended Assignment:** {recommended_question} ({recommended_count} uses)")
+            
+            # Show all assignments
+            st.markdown("**All Current Assignments:**")
+            for _, assignment in assignments_df.iterrows():
+                percentage = (assignment['count'] / total_usage * 100)
+                icon = "👑" if assignment['question'] == recommended_question else "🔄"
+                st.write(f"{icon} {assignment['question']} - {assignment['count']} uses ({percentage:.1f}%)")
     
-    # Expandable conflict details
+    # Resolution recommendations
+    st.markdown("#### 💡 Resolution Recommendations")
+    
+    resolution_data = []
     for _, conflict in df_conflicts.iterrows():
         uid = conflict['UID']
-        questions_count = conflict['QUESTIONS_COUNT']
-        total_usage = conflict['TOTAL_USAGE']
+        assignments = pd.DataFrame(conflict['ASSIGNMENTS']).sort_values('count', ascending=False)
         
-        severity_color = "🔴" if questions_count >= 3 else "🟡"
+        recommended = assignments.iloc[0]
+        alternatives = assignments.iloc[1:]
+        
+        resolution_data.append({
+            'UID': uid,
+            'RECOMMENDED_QUESTION': recommended['question'],
+            'RECOMMENDED_COUNT': recommended['count'],
+            'ALTERNATIVES_NEEDED': len(alternatives),
+            'SEVERITY': 'High' if len(assignments) >= 3 else 'Medium'
+        })
+    
+    resolution_df = pd.DataFrame(resolution_data)
+    
+    st.dataframe(
+        resolution_df,
+        column_config={
+            "UID": st.column_config.TextColumn("Conflicted UID", width="medium"),
+            "RECOMMENDED_QUESTION": st.column_config.TextColumn("Keep for Question", width="large"),
+            "RECOMMENDED_COUNT": st.column_config.NumberColumn("Usage Count", width="small"),
+            "ALTERNATIVES_NEEDED": st.column_config.NumberColumn("Need New UIDs", width="small"),
+            "SEVERITY": st.column_config.TextColumn("Severity", width="small")
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
+def render_optimized_bank_tab(df_optimized_bank):
+    """Render the final optimized question bank"""
+    st.markdown("### 📖 Optimized Question Bank")
+    st.markdown("*Final recommended UID assignments with conflict resolution*")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_questions = len(df_optimized_bank)
+        UIManager.render_metric("Total Questions", str(total_questions), "info")
+    
+    with col2:
+        high_confidence = len(df_optimized_bank[df_optimized_bank['CONFIDENCE_SCORE'] == 'High'])
+        UIManager.render_metric("High Confidence", str(high_confidence), "success")
+    
+    with col3:
+        no_conflicts = len(df_optimized_bank[df_optimized_bank['CONFLICT_STATUS'] == 'None'])
+        UIManager.render_metric("No Conflicts", str(no_conflicts), "success")
+    
+    with col4:
+        avg_usage = df_optimized_bank['USAGE_COUNT'].mean() if not df_optimized_bank.empty else 0
+        UIManager.render_metric("Avg Usage", f"{avg_usage:.0f}", "primary")
+    
+    # Filter options
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        confidence_filter = st.selectbox(
+            "Filter by confidence",
+            ["All", "High", "Medium", "Low"]
+        )
+    
+    with col2:
+        conflict_filter = st.selectbox(
+            "Filter by conflicts",
+            ["All", "None", "Low", "High"]
+        )
+    
+    with col3:
+        search_bank = st.text_input("🔍 Search questions", placeholder="Filter question bank...")
+    
+    # Apply filters
+    filtered_bank = df_optimized_bank.copy()
+    
+    if confidence_filter != "All":
+        filtered_bank = filtered_bank[filtered_bank['CONFIDENCE_SCORE'] == confidence_filter]
+    
+    if conflict_filter != "All":
+        filtered_bank = filtered_bank[filtered_bank['CONFLICT_STATUS'] == conflict_filter]
+    
+    if search_bank:
+        filtered_bank = filtered_bank[filtered_bank['QUESTION'].str.contains(search_bank, case=False, na=False)]
+    
+    # Display optimized question bank
+    st.markdown("#### 📊 Final Question Bank")
+    
+    if filtered_bank.empty:
+        st.info("No questions match the current filters.")
+    else:
+        # Add status indicators
+        display_df = filtered_bank.copy()
+        display_df['STATUS_INDICATOR'] = display_df.apply(
+            lambda row: f"{row['CONFIDENCE_SCORE']} Confidence | {row['CONFLICT_STATUS']} Conflict",
+            axis=1
+        )
+        
+        # Color code based on status
+        def get_status_color(conflict_status, confidence):
+            if conflict_status == "None" and confidence == "High":
+                return "✅ Excellent"
+            elif conflict_status == "Low" and confidence in ["High", "Medium"]:
+                return "⚠️ Good"
+            elif conflict_status == "High" or confidence == "Low":
+                return "🔴 Needs Review"
+            else:
+                return "🟡 Acceptable"
+        
+        display_df['OVERALL_STATUS'] = display_df.apply(
+            lambda row: get_status_color(row['CONFLICT_STATUS'], row['CONFIDENCE_SCORE']),
+            axis=1
+        )
+        
+        st.dataframe(
+            display_df[['UID', 'QUESTION', 'USAGE_COUNT', 'ALTERNATIVE_UIDS', 'CONFIDENCE_SCORE', 'CONFLICT_STATUS', 'OVERALL_STATUS']],
+            column_config={
+                "UID": st.column_config.TextColumn("UID", width="medium"),
+                "QUESTION": st.column_config.TextColumn("Question", width="large"),
+                "USAGE_COUNT": st.column_config.NumberColumn("Usage Count", width="small"),
+                "ALTERNATIVE_UIDS": st.column_config.NumberColumn("Alt UIDs", width="small"),
+                "CONFIDENCE_SCORE": st.column_config.TextColumn("Confidence", width="small"),
+                "CONFLICT_STATUS": st.column_config.TextColumn("Conflict Level", width="small"),
+                "OVERALL_STATUS": st.column_config.TextColumn("Overall Status", width="medium")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Export options
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv_data = display_df.to_csv(index=False)
+            st.download_button(
+                "📥 Download Optimized Bank",
+                csv_data,
+                f"optimized_question_bank_{uuid4().hex[:8]}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            if st.button("🚀 Deploy to Production", use_container_width=True):
+                st.info("🔧 This feature will implement the optimized UID assignments in the production database.")
+
+# Helper functions for Questions per Category tabs
+def render_category_overview_tab(df_categorized, df_category_questions, selected_categories):
+    """Render category overview tab"""
+    st.markdown("### 📊 Category Analysis Overview")
+    
+    # Category breakdown
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🏷️ Survey Distribution by Category")
+        category_summary = df_categorized['category'].value_counts().reset_index()
+        category_summary.columns = ['Category', 'Survey Count']
+        
+        st.dataframe(
+            category_summary,
+            column_config={
+                "Category": st.column_config.TextColumn("Category", width="medium"),
+                "Survey Count": st.column_config.NumberColumn("Surveys", width="small")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    
+    with col2:
+        st.markdown("#### 📝 Questions by Selected Categories")
+        if not df_category_questions.empty:
+            questions_by_category = df_category_questions.groupby('category').agg({
+                'heading_0': 'count',
+                'is_choice': lambda x: (x == False).sum()  # Count main questions
+            }).reset_index()
+            questions_by_category.columns = ['Category', 'Total Items', 'Main Questions']
+            
+            st.dataframe(
+                questions_by_category,
+                column_config={
+                    "Category": st.column_config.TextColumn("Category", width="medium"),
+                    "Total Items": st.column_config.NumberColumn("Total Items", width="small"),
+                    "Main Questions": st.column_config.NumberColumn("Main Questions", width="small")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+    
+    # Detailed surveys by category
+    st.markdown("#### 🔍 Detailed Survey Breakdown")
+    
+    for category in selected_categories:
+        with st.expander(f"📂 {category} Surveys"):
+            category_surveys = df_categorized[df_categorized['category'] == category]
+            
+            if category_surveys.empty:
+                st.info(f"No surveys found in {category} category.")
+            else:
+                st.dataframe(
+                    category_surveys[['survey_id', 'survey_title']],
+                    column_config={
+                        "survey_id": st.column_config.TextColumn("Survey ID", width="medium"),
+                        "survey_title": st.column_config.TextColumn("Survey Title", width="large")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+def render_category_uid_assignment_tab(df_category_questions, show_unique_only):
+    """Render UID assignment tab for categorized questions"""
+    st.markdown("### 📝 Questions & UID Assignment")
+    
+    if df_category_questions.empty:
+        st.info("No questions available for UID assignment.")
+        return
+    
+    # Calculate matching metrics
+    matched_percentage = MetricsCalculator.calculate_matched_percentage(df_category_questions)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_questions = len(df_category_questions[df_category_questions['is_choice'] == False])
+        UIManager.render_metric("Main Questions", str(total_questions), "info")
+    
+    with col2:
+        total_choices = len(df_category_questions[df_category_questions['is_choice'] == True])
+        UIManager.render_metric("Choices", str(total_choices), "primary")
+    
+    with col3:
+        UIManager.render_metric("Match Rate", f"{matched_percentage}%", "success")
+    
+    with col4:
+        unique_categories = len(df_category_questions['category'].unique())
+        UIManager.render_metric("Categories", str(unique_categories), "warning")
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        category_filter = st.selectbox(
+            "Filter by category",
+            ["All"] + list(df_category_questions['category'].unique())
+        )
+    
+    with col2:
+        match_filter = st.selectbox(
+            "Filter by match status",
+            ["All", "Matched", "Not Matched", "High Confidence", "Low Confidence"]
+        )
+    
+    with col3:
+        search_question = st.text_input("🔍 Search questions", placeholder="Type to filter...")
+    
+    # Apply filters
+    display_df = df_category_questions.copy()
+    
+    if show_unique_only:
+        display_df = display_df[display_df['is_choice'] == False]
+    
+    if category_filter != "All":
+        display_df = display_df[display_df['category'] == category_filter]
+    
+    if search_question:
+        display_df = display_df[display_df['heading_0'].str.contains(search_question, case=False, na=False)]
+    
+    if match_filter != "All":
+        filter_map = {
+            "Matched": display_df["Final_UID"].notna(),
+            "Not Matched": display_df["Final_UID"].isna(),
+            "High Confidence": display_df.get("Match_Confidence", pd.Series()) == "✅ High",
+            "Low Confidence": display_df.get("Match_Confidence", pd.Series()) == "⚠️ Low"
+        }
+        if match_filter in filter_map:
+            display_df = display_df[filter_map[match_filter]]
+    
+    # UID options for manual assignment
+    uid_options = [None]
+    if st.session_state.df_reference is not None:
+        uid_options.extend([
+            f"{row['UID']} - {row['HEADING_0']}" 
+            for _, row in st.session_state.df_reference.iterrows()
+        ])
+    
+    # Display editable questions
+    st.markdown("#### 🎯 Question UID Assignment")
+    
+    if display_df.empty:
+        st.info("No questions match the current filters.")
+    else:
+        # Prepare columns for display
+        display_columns = [
+            "category", "heading_0", "Final_UID", "schema_type", 
+            "mandatory", "question_category", "Change_UID"
+        ]
+        
+        # Add confidence column if available
+        if "Match_Confidence" in display_df.columns:
+            display_columns.insert(3, "Match_Confidence")
+        
+        display_columns = [col for col in display_columns if col in display_df.columns]
+        
+        edited_df = st.data_editor(
+            display_df[display_columns],
+            column_config={
+                "category": st.column_config.TextColumn("Category", width="small"),
+                "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+                "Final_UID": st.column_config.TextColumn("Current UID", width="medium"),
+                "Match_Confidence": st.column_config.TextColumn("Confidence", width="small"),
+                "schema_type": st.column_config.TextColumn("Type", width="small"),
+                "mandatory": st.column_config.CheckboxColumn("Required", width="small"),
+                "question_category": st.column_config.TextColumn("Q Category", width="small"),
+                "Change_UID": st.column_config.SelectboxColumn(
+                    "Assign UID",
+                    options=uid_options,
+                    help="Select or change UID assignment"
+                )
+            },
+            disabled=["category", "heading_0", "Final_UID", "Match_Confidence", "schema_type", "question_category"],
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # Process UID changes
+        for idx, row in edited_df.iterrows():
+            if pd.notnull(row.get("Change_UID")):
+                new_uid = row["Change_UID"].split(" - ")[0] if " - " in row["Change_UID"] else None
+                if new_uid:
+                    original_idx = display_df.index[idx]
+                    st.session_state.df_category_questions.at[original_idx, "Final_UID"] = new_uid
+                    st.session_state.df_category_questions.at[original_idx, "configured_final_UID"] = new_uid
+            
+            # Update mandatory status
+            if "mandatory" in row and idx < len(display_df):
+                original_idx = display_df.index[idx]
+                st.session_state.df_category_questions.at[original_idx, "mandatory"] = row["mandatory"]
+
+def render_category_final_config_tab(df_category_questions):
+    """Render final configuration tab for categorized questions"""
+    st.markdown("### 📋 Final Category Configuration")
+    
+    if df_category_questions.empty:
+        st.info("No configuration data available.")
+        return
+    
+    # Final metrics
+    matched_percentage = MetricsCalculator.calculate_matched_percentage(df_category_questions)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        UIManager.render_metric("Final Match Rate", f"{matched_percentage}%", "success")
+    
+    with col2:
+        total_items = len(df_category_questions)
+        UIManager.render_metric("Total Items", str(total_items), "info")
+    
+    with col3:
+        configured_items = len(df_category_questions[df_category_questions["Final_UID"].notna()])
+        UIManager.render_metric("Configured Items", str(configured_items), "primary")
+    
+    with col4:
+        categories_count = len(df_category_questions['category'].unique())
+        UIManager.render_metric("Categories", str(categories_count), "warning")
+    
+    # Configuration preview by category
+    st.markdown("#### 📊 Configuration by Category")
+    
+    for category in df_category_questions['category'].unique():
+        with st.expander(f"📂 {category} Configuration"):
+            category_data = df_category_questions[df_category_questions['category'] == category]
+            
+            # Show summary
+            total_in_category = len(category_data)
+            configured_in_category = len(category_data[category_data["Final_UID"].notna()])
+            main_questions = len(category_data[category_data["is_choice"] == False])
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Items", total_in_category)
+            with col2:
+                st.metric("Configured", configured_in_category)
+            with col3:
+                st.metric("Main Questions", main_questions)
+            
+            # Show detailed data
+            display_columns = [
+                "heading_0", "Final_UID", "is_choice", "mandatory", 
+                "schema_type", "question_category"
+            ]
+            display_columns = [col for col in display_columns if col in category_data.columns]
+            
+            st.dataframe(
+                category_data[display_columns],
+                column_config={
+                    "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+                    "Final_UID": st.column_config.TextColumn("UID", width="medium"),
+                    "is_choice": st.column_config.CheckboxColumn("Choice", width="small"),
+                    "mandatory": st.column_config.CheckboxColumn("Required", width="small"),
+                    "schema_type": st.column_config.TextColumn("Type", width="small"),
+                    "question_category": st.column_config.TextColumn("Category", width="small")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+    
+    # Export options
+    st.markdown("#### 📤 Export Options")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Prepare export data
+        export_columns = [
+            "category", "heading_0", "Final_UID", "is_choice", "mandatory",
+            "schema_type", "question_category", "position"
+        ]
+        export_columns = [col for col in export_columns if col in df_category_questions.columns]
+        export_df = df_category_questions[export_columns].copy()
+        
+        csv_data = export_df.to_csv(index=False)
+        st.download_button(
+            "📥 Download Category Configuration",
+            csv_data,
+            f"category_questions_config_{uuid4().hex[:8]}.csv",
+            "text/csv",
+            use_container_width=True
+        )
+    
+    with col2:
+        if st.button("🚀 Deploy Configuration", use_container_width=True):
+            st.info("🔧 This feature will deploy the category-based question configuration to production.")
+
+# Run the application
+if __name__ == "__main__":
+    main()
+
+
 
 
 
