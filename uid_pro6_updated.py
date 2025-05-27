@@ -1770,67 +1770,83 @@ elif st.session_state.page == "categorized_questions":
 
 # ---------------- UID Dominance & Conflict Assignment ----------------
 with st.expander("🔍 UID Dominance & Conflict Assignment", expanded=False):
-    uploaded_qb = st.file_uploader("Upload Question Bank File (CSV/Excel)", type=["csv", "xlsx"], key="uid_conflict_qb")
-    if uploaded_qb:
-        if uploaded_qb.name.endswith(".csv"):
-            df_qb = pd.read_csv(uploaded_qb)
-        else:
-            df_qb = pd.read_excel(uploaded_qb)
+    st.markdown("This pulls live question data from Snowflake...")
 
-        if not {'UID', 'heading_0'}.issubset(df_qb.columns):
-            st.error("The uploaded file must contain 'UID' and 'heading_0' columns.")
-        else:
-            st.success("File uploaded and validated!")
+    try:
+        engine = get_snowflake_engine()
+        with engine.connect() as conn:
+            df_qb = pd.read_sql("SELECT UID, heading_0 FROM QUESTION_BANK", conn)
 
-            # Count frequency of UID per heading
-            freq_table = df_qb.groupby(['heading_0', 'UID']).size().reset_index(name='count')
-            best_uid = freq_table.sort_values(['heading_0', 'count'], ascending=[True, False]).drop_duplicates('heading_0')
+        st.success("Successfully pulled question bank from Snowflake!")
 
-            # Detect near conflicts
-            conflict_check = freq_table.groupby('heading_0')['count'].apply(lambda x: x.nlargest(2)).reset_index()
-            conflict_summary = conflict_check.groupby('heading_0')['count'].apply(list).reset_index()
-            conflict_summary['conflict'] = conflict_summary['count'].apply(lambda x: len(x) > 1 and abs(x[0] - x[1]) < 100)
+        freq_table = df_qb.groupby(['heading_0', 'UID']).size().reset_index(name='count')
+        best_uid = freq_table.sort_values(['heading_0', 'count'], ascending=[True, False]).drop_duplicates('heading_0')
 
-            final_assignments = best_uid.merge(conflict_summary[['heading_0', 'conflict']], on='heading_0', how='left')
-            final_assignments['conflict'] = final_assignments['conflict'].fillna(False)
+        # Detect near conflicts
+        conflict_check = freq_table.groupby('heading_0')['count'].apply(lambda x: x.nlargest(2)).reset_index()
+        conflict_summary = conflict_check.groupby('heading_0')['count'].apply(list).reset_index()
+        conflict_summary['conflict'] = conflict_summary['count'].apply(lambda x: len(x) > 1 and abs(x[0] - x[1]) < 100)
 
-            st.markdown("### ✅ Final UID Assignments")
-            st.dataframe(final_assignments[['heading_0', 'UID', 'count', 'conflict']])
+        final_assignments = best_uid.merge(conflict_summary[['heading_0', 'conflict']], on='heading_0', how='left')
+        final_assignments['conflict'] = final_assignments['conflict'].fillna(False)
 
-            st.markdown("### ⚠️ Top 10 Conflicts")
-            conflict_table = final_assignments[final_assignments['conflict'] == True].sort_values('count', ascending=False).head(10)
-            st.dataframe(conflict_table)
+        st.markdown("### ✅ Final UID Assignments")
+        st.dataframe(final_assignments[['heading_0', 'UID', 'count', 'conflict']])
 
-            csv_download = final_assignments.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇️ Download Final Assignments CSV", csv_download, file_name="uid_assignments.csv", mime="text/csv")
+        st.markdown("### ⚠️ Top 10 Conflicts")
+        conflict_table = final_assignments[final_assignments['conflict'] == True].sort_values('count', ascending=False).head(10)
+        st.dataframe(conflict_table)
+
+        csv_download = final_assignments.to_csv(index=False).encode('utf-8')
+        st.download_button("⬇️ Download Final Assignments CSV", csv_download, file_name="uid_assignments.csv", mime="text/csv")
+    except Exception as e:
+        st.error(f"Snowflake fetch failed: {e}")
 
 
 
 # ---------------- Categorized Survey Question Viewer ----------------
 with st.expander("📊 Categorize SurveyMonkey Questions by Title", expanded=False):
-    uploaded_survey = st.file_uploader("Upload SurveyMonkey File (CSV/Excel)", type=["csv", "xlsx"], key="survey_cat_file")
-    if uploaded_survey:
-        if uploaded_survey.name.endswith(".csv"):
-            df_survey = pd.read_csv(uploaded_survey)
-        else:
-            df_survey = pd.read_excel(uploaded_survey)
+    st.markdown("This fetches surveys and questions from SurveyMonkey...")
 
-        if not {'survey_title', 'heading_0'}.issubset(df_survey.columns):
-            st.error("File must contain 'survey_title' and 'heading_0' columns.")
-        else:
-            st.success("Survey data uploaded!")
+    try:
+        headers = {
+            "Authorization": f"Bearer {st.secrets['surveymonkey']['access_token']}",
+            "Content-Type": "application/json"
+        }
+        surveys_resp = requests.get("https://api.surveymonkey.com/v3/surveys", headers=headers)
+        surveys = surveys_resp.json().get("data", [])
+        survey_titles = {s['title']: s['id'] for s in surveys}
 
-            # Categorize by title
-            category_map = {}
-            for category, keywords in SURVEY_CATEGORIES.items():
-                mask = df_survey['survey_title'].str.lower().apply(lambda t: any(k.lower() in t for k in keywords))
-                category_map[category] = df_survey[mask]
+        selected_title = st.selectbox("Select Survey Title", list(survey_titles.keys()))
+        selected_id = survey_titles[selected_title]
 
-            selected_cat = st.selectbox("Select Category", list(category_map.keys()))
-            if selected_cat:
-                unique_qs = category_map[selected_cat]['heading_0'].drop_duplicates().reset_index(drop=True)
-                st.markdown(f"### 📌 Unique Questions for `{selected_cat}`")
-                st.dataframe(unique_qs)
+        questions = []
+        pages_url = f"https://api.surveymonkey.com/v3/surveys/{selected_id}/pages"
+        pages_resp = requests.get(pages_url, headers=headers)
+        pages = pages_resp.json().get("data", [])
 
-                if st.button("🚀 Trigger UID Assignment Flow"):
-                    st.success(f"Assignment trigger initialized for {len(unique_qs)} questions.")
+        for page in pages:
+            q_url = f"https://api.surveymonkey.com/v3/surveys/{selected_id}/pages/{page['id']}/questions"
+            q_resp = requests.get(q_url, headers=headers)
+            q_data = q_resp.json().get("data", [])
+            for q in q_data:
+                questions.append({"survey_title": selected_title, "heading_0": q.get("headings", [{}])[0].get("heading", "")})
+
+        df_survey = pd.DataFrame(questions)
+
+        # Categorize
+        category_map = {}
+        for category, keywords in SURVEY_CATEGORIES.items():
+            mask = df_survey['survey_title'].str.lower().apply(lambda t: any(k.lower() in t for k in keywords))
+            category_map[category] = df_survey[mask]
+
+        selected_cat = st.selectbox("Filter by Category", list(category_map.keys()))
+        if selected_cat:
+            unique_qs = category_map[selected_cat]['heading_0'].drop_duplicates().reset_index(drop=True)
+            st.markdown(f"### 📌 Unique Questions for `{selected_cat}`")
+            st.dataframe(unique_qs)
+
+            if st.button("🚀 Trigger UID Assignment Flow"):
+                st.success(f"Assignment trigger initialized for {len(unique_qs)} questions.")
+    except Exception as e:
+        st.error(f"SurveyMonkey fetch failed: {e}")
