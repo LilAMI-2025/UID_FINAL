@@ -2146,6 +2146,7 @@ elif st.session_state.page == "configure_survey":
         st.markdown(f'<div class="warning-card">РЮї Error: {e}</div>', unsafe_allow_html=True)
 
 # Create New Survey Page
+# Create New Survey Page
 elif st.session_state.page == "create_survey":
     st.markdown("## РъЋ Create New Survey")
     
@@ -2203,7 +2204,11 @@ elif st.session_state.page == "create_survey":
                 st.session_state.survey_template = survey_template
                 
                 # Run UID assignment
-                df_questions = pd.DataFrame([{"heading_0": q["heading"]}, q["survey_title"] = survey_title for q in questions]])
+                df_questions = pd.DataFrame([
+                    {"heading_0": q["heading"], "survey_title": survey_title}
+                    for q in questions
+                ])
+                df_reference = get_all_reference_questions()
                 df_final = run_uid_match(df_reference, df_questions)
                 
                 st.markdown("### UID Assignments")
@@ -2220,6 +2225,7 @@ elif st.session_state.page == "create_survey":
     except Exception as e:
         logger.error(f"Create Survey failed: {e}")
         st.markdown(f'<div class="warning-card">РЮї Error: {e}</div>', unsafe_allow_html=True)
+
 
 # View Question Bank Page
 elif st.session_state.page == "view_question_bank":
@@ -2400,3 +2406,5 @@ elif st.session_state.page == "data_quality":
     except Exception as e:
         logger.error(f"Data Quality Management failed: {e}")
         st.markdown(f'<div class="warning-card">Error: {e}</div>', unsafe_allow_html=True)
+
+
