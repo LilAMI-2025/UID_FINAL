@@ -585,6 +585,114 @@ class SessionManager:
             if key not in st.session_state:
                 st.session_state[key] = default_value
 
+class QuestionAnalyzer:
+    """Handles question bank analysis and UID optimization"""
+    
+    @staticmethod
+    def analyze_uid_distribution():
+        """Analyze UID distribution across questions"""
+        query = """
+        SELECT 
+            HEADING_0,
+            UID,
+            COUNT(*) as UID_COUNT
+        FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+        WHERE UID IS NOT NULL AND HEADING_0 IS NOT NULL
+        GROUP BY HEADING_0, UID
+        ORDER BY HEADING_0, UID_COUNT DESC
+        """
+        return DataManager.run_snowflake_query(query)
+    
+    @staticmethod
+    def find_optimal_uid_assignments(df_uid_distribution):
+        """Find optimal UID assignments based on highest counts"""
+        # Group by question and find the UID with highest count for each question
+        optimal_assignments = []
+        
+        for question, group in df_uid_distribution.groupby('HEADING_0'):
+            # Sort by count descending and take the top UID
+            top_assignment = group.loc[group['UID_COUNT'].idxmax()]
+            
+            # Get all UIDs for this question to identify conflicts
+            all_uids = group.to_dict('records')
+            
+            optimal_assignments.append({
+                'QUESTION': question,
+                'OPTIMAL_UID': top_assignment['UID'],
+                'OPTIMAL_COUNT': top_assignment['UID_COUNT'],
+                'TOTAL_ASSIGNMENTS': len(all_uids),
+                'ALL_UIDS': all_uids,
+                'HAS_CONFLICT': len(all_uids) > 1
+            })
+        
+        return pd.DataFrame(optimal_assignments)
+    
+    @staticmethod
+    def identify_uid_conflicts(df_optimal):
+        """Identify UIDs that are assigned to multiple questions"""
+        uid_usage = {}
+        
+        for _, row in df_optimal.iterrows():
+            uid = row['OPTIMAL_UID']
+            if uid not in uid_usage:
+                uid_usage[uid] = []
+            uid_usage[uid].append({
+                'question': row['QUESTION'],
+                'count': row['OPTIMAL_COUNT']
+            })
+        
+        # Find UIDs assigned to multiple questions
+        conflicts = []
+        for uid, assignments in uid_usage.items():
+            if len(assignments) > 1:
+                conflicts.append({
+                    'UID': uid,
+                    'QUESTIONS_COUNT': len(assignments),
+                    'ASSIGNMENTS': assignments,
+                    'TOTAL_USAGE': sum(a['count'] for a in assignments)
+                })
+        
+        return pd.DataFrame(conflicts)
+    
+    @staticmethod
+    def create_optimized_question_bank(df_optimal, df_conflicts):
+        """Create final optimized question bank resolving conflicts"""
+        optimized_bank = []
+        conflict_uids = set(df_conflicts['UID'].tolist()) if not df_conflicts.empty else set()
+        
+        for _, row in df_optimal.iterrows():
+            uid = row['OPTIMAL_UID']
+            question = row['QUESTION']
+            
+            # Mark if this UID has conflicts
+            has_conflict = uid in conflict_uids
+            conflict_severity = "High" if has_conflict and row['TOTAL_ASSIGNMENTS'] > 3 else "Low" if has_conflict else "None"
+            
+            optimized_bank.append({
+                'UID': uid,
+                'QUESTION': question,
+                'USAGE_COUNT': row['OPTIMAL_COUNT'],
+                'ALTERNATIVE_UIDS': len(row['ALL_UIDS']) - 1,
+                'CONFLICT_STATUS': conflict_severity,
+                'CONFIDENCE_SCORE': QuestionAnalyzer._calculate_confidence_score(row)
+            })
+        
+        return pd.DataFrame(optimized_bank)
+    
+    @staticmethod
+    def _calculate_confidence_score(row):
+        """Calculate confidence score for UID assignment"""
+        total_count = sum(uid_info['UID_COUNT'] for uid_info in row['ALL_UIDS'])
+        optimal_ratio = row['OPTIMAL_COUNT'] / total_count if total_count > 0 else 0
+        
+        # Score based on dominance of the optimal UID
+        if optimal_ratio >= 0.8:
+            return "High"
+        elif optimal_ratio >= 0.6:
+            return "Medium"
+        else:
+            return "Low"
+
 class PageRenderer:
     """Renders different pages of the application"""
     
@@ -621,6 +729,9 @@ class PageRenderer:
         
         with col3:
             st.markdown("#### 📈 Analytics")
+            if st.button("📊 Questions per Category", use_container_width=True):
+                st.session_state.page = "questions_category"
+                st.rerun()
             self.ui.render_metric("Total Surveys", "Loading...", "info")
             self.ui.render_metric("Match Rate", "Loading...", "success")
     
@@ -635,7 +746,8 @@ class PageRenderer:
                 "⚙️ Configure Survey": "configure_survey",
                 "📖 Question Bank": "view_question_bank",
                 "🔄 Update Bank": "update_question_bank",
-                "➕ Create Survey": "create_survey"
+                "➕ Create Survey": "create_survey",
+                "📈 Questions Category": "questions_category"
             }
             
             for page_name, page_key in pages.items():
@@ -682,6 +794,9 @@ def main():
     
     elif st.session_state.page == "create_survey":
         render_create_survey_page()
+    
+    elif st.session_state.page == "questions_category":
+        render_questions_category_page()
 
 def render_view_surveys_page():
     """Render the view surveys page"""
@@ -1361,7 +1476,7 @@ def render_create_survey_page():
                         with col2:
                             is_required = st.checkbox("Required", key=f"q_required_{page_num}_{q_num}")
                         
-                         # Question-type specific options
+                        # Question-type specific options
                         choices_data = []
                         
                         if question_type in ["Single Choice", "Multiple Choice"]:
@@ -1512,11 +1627,416 @@ def render_create_survey_page():
         logger.error(f"Survey creation failed: {e}")
         st.error(f"❌ Error in survey creation: {e}")
 
+def render_questions_category_page():
+    """Render questions per survey category analysis page"""
+    UIManager.render_header()
+    st.markdown("## 📈 Questions per Survey Category")
+    st.markdown("### 🔍 UID Distribution Analysis & Optimization")
+    
+    try:
+        # Load and analyze data
+        with st.spinner("📊 Analyzing UID distribution..."):
+            df_uid_distribution = QuestionAnalyzer.analyze_uid_distribution()
+            
+            if df_uid_distribution.empty:
+                st.warning("⚠️ No UID distribution data found.")
+                return
+            
+            # Find optimal assignments
+            df_optimal = QuestionAnalyzer.find_optimal_uid_assignments(df_uid_distribution)
+            df_conflicts = QuestionAnalyzer.identify_uid_conflicts(df_optimal)
+            df_optimized_bank = QuestionAnalyzer.create_optimized_question_bank(df_optimal, df_conflicts)
+        
+        # Main dashboard metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_questions = len(df_optimal)
+            UIManager.render_metric("Total Questions", str(total_questions), "info")
+        
+        with col2:
+            questions_with_conflicts = len(df_optimal[df_optimal['HAS_CONFLICT'] == True])
+            UIManager.render_metric("Questions with Conflicts", str(questions_with_conflicts), "warning")
+        
+        with col3:
+            unique_uids = len(df_optimal['OPTIMAL_UID'].unique())
+            UIManager.render_metric("Unique UIDs", str(unique_uids), "primary")
+        
+        with col4:
+            conflict_rate = (questions_with_conflicts / total_questions * 100) if total_questions > 0 else 0
+            UIManager.render_metric("Conflict Rate", f"{conflict_rate:.1f}%", "warning")
+        
+        # Tabs for different views
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📊 UID Distribution", 
+            "🎯 Optimal Assignments", 
+            "⚠️ Conflict Analysis", 
+            "📖 Optimized Question Bank"
+        ])
+        
+        with tab1:
+            render_uid_distribution_tab(df_uid_distribution, df_optimal)
+        
+        with tab2:
+            render_optimal_assignments_tab(df_optimal)
+        
+        with tab3:
+            render_conflict_analysis_tab(df_conflicts, df_optimal)
+        
+        with tab4:
+            render_optimized_bank_tab(df_optimized_bank)
+    
+    except Exception as e:
+        logger.error(f"Questions category analysis failed: {e}")
+        st.error(f"❌ Error in analysis: {e}")
+
+def render_uid_distribution_tab(df_uid_distribution, df_optimal):
+    """Render UID distribution analysis tab"""
+    st.markdown("### 📊 UID Distribution Analysis")
+    
+    # Search and filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        search_question = st.text_input("🔍 Search questions", placeholder="Type to filter questions...")
+    with col2:
+        min_count = st.number_input("Minimum UID count", min_value=1, value=1)
+    
+    # Apply filters
+    filtered_df = df_uid_distribution.copy()
+    if search_question:
+        filtered_df = filtered_df[filtered_df['HEADING_0'].str.contains(search_question, case=False, na=False)]
+    filtered_df = filtered_df[filtered_df['UID_COUNT'] >= min_count]
+    
+    # Summary statistics
+    st.markdown("#### 📈 Distribution Summary")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        avg_count = filtered_df['UID_COUNT'].mean() if not filtered_df.empty else 0
+        UIManager.render_metric("Average UID Count", f"{avg_count:.1f}", "info")
+    
+    with col2:
+        max_count = filtered_df['UID_COUNT'].max() if not filtered_df.empty else 0
+        UIManager.render_metric("Max UID Count", str(max_count), "success")
+    
+    with col3:
+        total_records = len(filtered_df)
+        UIManager.render_metric("Total Records", str(total_records), "primary")
+    
+    # Detailed distribution table
+    st.markdown("#### 📋 Detailed UID Distribution")
+    
+    if filtered_df.empty:
+        st.info("No data matches the current filters.")
+    else:
+        # Add ranking and optimal UID indicator
+        display_df = filtered_df.copy()
+        
+        # Mark optimal UIDs
+        optimal_uid_map = dict(zip(df_optimal['QUESTION'], df_optimal['OPTIMAL_UID']))
+        display_df['IS_OPTIMAL'] = display_df.apply(
+            lambda row: "✅ Optimal" if optimal_uid_map.get(row['HEADING_0']) == row['UID'] else "❌ Alternative",
+            axis=1
+        )
+        
+        # Sort by question and count
+        display_df = display_df.sort_values(['HEADING_0', 'UID_COUNT'], ascending=[True, False])
+        
+        st.dataframe(
+            display_df,
+            column_config={
+                "HEADING_0": st.column_config.TextColumn("Question", width="large"),
+                "UID": st.column_config.TextColumn("UID", width="medium"),
+                "UID_COUNT": st.column_config.NumberColumn("Usage Count", width="small"),
+                "IS_OPTIMAL": st.column_config.TextColumn("Status", width="small")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Export option
+        csv_data = display_df.to_csv(index=False)
+        st.download_button(
+            "📥 Download Distribution Data",
+            csv_data,
+            f"uid_distribution_{uuid4().hex[:8]}.csv",
+            "text/csv"
+        )
+
+def render_optimal_assignments_tab(df_optimal):
+    """Render optimal UID assignments tab"""
+    st.markdown("### 🎯 Optimal UID Assignments")
+    st.markdown("*Based on highest usage count per question*")
+    
+    # Filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        conflict_filter = st.selectbox(
+            "Filter by conflict status",
+            ["All", "With Conflicts", "No Conflicts"]
+        )
+    with col2:
+        search_optimal = st.text_input("🔍 Search questions", placeholder="Filter optimal assignments...")
+    
+    # Apply filters
+    filtered_optimal = df_optimal.copy()
+    
+    if conflict_filter == "With Conflicts":
+        filtered_optimal = filtered_optimal[filtered_optimal['HAS_CONFLICT'] == True]
+    elif conflict_filter == "No Conflicts":
+        filtered_optimal = filtered_optimal[filtered_optimal['HAS_CONFLICT'] == False]
+    
+    if search_optimal:
+        filtered_optimal = filtered_optimal[filtered_optimal['QUESTION'].str.contains(search_optimal, case=False, na=False)]
+    
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        clean_assignments = len(filtered_optimal[filtered_optimal['HAS_CONFLICT'] == False])
+        UIManager.render_metric("Clean Assignments", str(clean_assignments), "success")
+    
+    with col2:
+        conflicted_assignments = len(filtered_optimal[filtered_optimal['HAS_CONFLICT'] == True])
+        UIManager.render_metric("Conflicted Assignments", str(conflicted_assignments), "warning")
+    
+    with col3:
+        avg_alternatives = filtered_optimal['TOTAL_ASSIGNMENTS'].mean() - 1 if not filtered_optimal.empty else 0
+        UIManager.render_metric("Avg Alternatives", f"{avg_alternatives:.1f}", "info")
+    
+    # Display optimal assignments
+    st.markdown("#### 📊 Optimal Assignment Details")
+    
+    if filtered_optimal.empty:
+        st.info("No assignments match the current filters.")
+    else:
+        # Prepare display data
+        display_df = filtered_optimal.copy()
+        display_df['CONFLICT_INDICATOR'] = display_df['HAS_CONFLICT'].apply(
+            lambda x: "⚠️ Has Conflicts" if x else "✅ Clean"
+        )
+        
+        # Calculate dominance percentage
+        display_df['DOMINANCE_PCT'] = display_df.apply(
+            lambda row: f"{(row['OPTIMAL_COUNT'] / sum(uid['UID_COUNT'] for uid in row['ALL_UIDS']) * 100):.1f}%",
+            axis=1
+        )
+        
+        st.dataframe(
+            display_df[['QUESTION', 'OPTIMAL_UID', 'OPTIMAL_COUNT', 'TOTAL_ASSIGNMENTS', 'DOMINANCE_PCT', 'CONFLICT_INDICATOR']],
+            column_config={
+                "QUESTION": st.column_config.TextColumn("Question", width="large"),
+                "OPTIMAL_UID": st.column_config.TextColumn("Optimal UID", width="medium"),
+                "OPTIMAL_COUNT": st.column_config.NumberColumn("Usage Count", width="small"),
+                "TOTAL_ASSIGNMENTS": st.column_config.NumberColumn("Total UIDs", width="small"),
+                "DOMINANCE_PCT": st.column_config.TextColumn("Dominance %", width="small"),
+                "CONFLICT_INDICATOR": st.column_config.TextColumn("Status", width="medium")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+
+def render_conflict_analysis_tab(df_conflicts, df_optimal):
+    """Render conflict analysis dashboard"""
+    st.markdown("### ⚠️ UID Conflict Analysis")
+    st.markdown("*UIDs assigned to multiple questions*")
+    
+    if df_conflicts.empty:
+        UIManager.show_success("🎉 No UID conflicts found! All UIDs have unique question assignments.")
+        return
+    
+    # Conflict severity analysis
+    high_severity_conflicts = len(df_conflicts[df_conflicts['QUESTIONS_COUNT'] >= 3])
+    medium_severity_conflicts = len(df_conflicts[df_conflicts['QUESTIONS_COUNT'] == 2])
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        UIManager.render_metric("Total Conflicted UIDs", str(len(df_conflicts)), "warning")
+    
+    with col2:
+        UIManager.render_metric("High Severity (3+ questions)", str(high_severity_conflicts), "warning")
+    
+    with col3:
+        UIManager.render_metric("Medium Severity (2 questions)", str(medium_severity_conflicts), "info")
+    
+    # Detailed conflict breakdown
+    st.markdown("#### 🔍 Conflict Details")
+    
+    # Expandable conflict details
+    for _, conflict in df_conflicts.iterrows():
+        uid = conflict['UID']
+        questions_count = conflict['QUESTIONS_COUNT']
+        total_usage = conflict['TOTAL_USAGE']
+        
+        severity_color = "🔴" if questions_count >= 3 else "🟡"
+        
+        with st.expander(f"{severity_color} UID {uid} - {questions_count} questions ({total_usage} total usage)"):
+            assignments_df = pd.DataFrame(conflict['ASSIGNMENTS'])
+            assignments_df = assignments_df.sort_values('count', ascending=False)
+            
+            # Show which question should get this UID (highest count)
+            recommended_question = assignments_df.iloc[0]['question']
+            recommended_count = assignments_df.iloc[0]['count']
+            
+            st.markdown(f"**Recommended Assignment:** {recommended_question} ({recommended_count} uses)")
+            
+            # Show all assignments
+            st.markdown("**All Current Assignments:**")
+            for _, assignment in assignments_df.iterrows():
+                percentage = (assignment['count'] / total_usage * 100)
+                icon = "👑" if assignment['question'] == recommended_question else "🔄"
+                st.write(f"{icon} {assignment['question']} - {assignment['count']} uses ({percentage:.1f}%)")
+    
+    # Resolution recommendations
+    st.markdown("#### 💡 Resolution Recommendations")
+    
+    resolution_data = []
+    for _, conflict in df_conflicts.iterrows():
+        uid = conflict['UID']
+        assignments = pd.DataFrame(conflict['ASSIGNMENTS']).sort_values('count', ascending=False)
+        
+        recommended = assignments.iloc[0]
+        alternatives = assignments.iloc[1:]
+        
+        resolution_data.append({
+            'UID': uid,
+            'RECOMMENDED_QUESTION': recommended['question'],
+            'RECOMMENDED_COUNT': recommended['count'],
+            'ALTERNATIVES_NEEDED': len(alternatives),
+            'SEVERITY': 'High' if len(assignments) >= 3 else 'Medium'
+        })
+    
+    resolution_df = pd.DataFrame(resolution_data)
+    
+    st.dataframe(
+        resolution_df,
+        column_config={
+            "UID": st.column_config.TextColumn("Conflicted UID", width="medium"),
+            "RECOMMENDED_QUESTION": st.column_config.TextColumn("Keep for Question", width="large"),
+            "RECOMMENDED_COUNT": st.column_config.NumberColumn("Usage Count", width="small"),
+            "ALTERNATIVES_NEEDED": st.column_config.NumberColumn("Need New UIDs", width="small"),
+            "SEVERITY": st.column_config.TextColumn("Severity", width="small")
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
+def render_optimized_bank_tab(df_optimized_bank):
+    """Render the final optimized question bank"""
+    st.markdown("### 📖 Optimized Question Bank")
+    st.markdown("*Final recommended UID assignments with conflict resolution*")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_questions = len(df_optimized_bank)
+        UIManager.render_metric("Total Questions", str(total_questions), "info")
+    
+    with col2:
+        high_confidence = len(df_optimized_bank[df_optimized_bank['CONFIDENCE_SCORE'] == 'High'])
+        UIManager.render_metric("High Confidence", str(high_confidence), "success")
+    
+    with col3:
+        no_conflicts = len(df_optimized_bank[df_optimized_bank['CONFLICT_STATUS'] == 'None'])
+        UIManager.render_metric("No Conflicts", str(no_conflicts), "success")
+    
+    with col4:
+        avg_usage = df_optimized_bank['USAGE_COUNT'].mean() if not df_optimized_bank.empty else 0
+        UIManager.render_metric("Avg Usage", f"{avg_usage:.0f}", "primary")
+    
+    # Filter options
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        confidence_filter = st.selectbox(
+            "Filter by confidence",
+            ["All", "High", "Medium", "Low"]
+        )
+    
+    with col2:
+        conflict_filter = st.selectbox(
+            "Filter by conflicts",
+            ["All", "None", "Low", "High"]
+        )
+    
+    with col3:
+        search_bank = st.text_input("🔍 Search questions", placeholder="Filter question bank...")
+    
+    # Apply filters
+    filtered_bank = df_optimized_bank.copy()
+    
+    if confidence_filter != "All":
+        filtered_bank = filtered_bank[filtered_bank['CONFIDENCE_SCORE'] == confidence_filter]
+    
+    if conflict_filter != "All":
+        filtered_bank = filtered_bank[filtered_bank['CONFLICT_STATUS'] == conflict_filter]
+    
+    if search_bank:
+        filtered_bank = filtered_bank[filtered_bank['QUESTION'].str.contains(search_bank, case=False, na=False)]
+    
+    # Display optimized question bank
+    st.markdown("#### 📊 Final Question Bank")
+    
+    if filtered_bank.empty:
+        st.info("No questions match the current filters.")
+    else:
+        # Add status indicators
+        display_df = filtered_bank.copy()
+        display_df['STATUS_INDICATOR'] = display_df.apply(
+            lambda row: f"{row['CONFIDENCE_SCORE']} Confidence | {row['CONFLICT_STATUS']} Conflict",
+            axis=1
+        )
+        
+        # Color code based on status
+        def get_status_color(conflict_status, confidence):
+            if conflict_status == "None" and confidence == "High":
+                return "✅ Excellent"
+            elif conflict_status == "Low" and confidence in ["High", "Medium"]:
+                return "⚠️ Good"
+            elif conflict_status == "High" or confidence == "Low":
+                return "🔴 Needs Review"
+            else:
+                return "🟡 Acceptable"
+        
+        display_df['OVERALL_STATUS'] = display_df.apply(
+            lambda row: get_status_color(row['CONFLICT_STATUS'], row['CONFIDENCE_SCORE']),
+            axis=1
+        )
+        
+        st.dataframe(
+            display_df[['UID', 'QUESTION', 'USAGE_COUNT', 'ALTERNATIVE_UIDS', 'CONFIDENCE_SCORE', 'CONFLICT_STATUS', 'OVERALL_STATUS']],
+            column_config={
+                "UID": st.column_config.TextColumn("UID", width="medium"),
+                "QUESTION": st.column_config.TextColumn("Question", width="large"),
+                "USAGE_COUNT": st.column_config.NumberColumn("Usage Count", width="small"),
+                "ALTERNATIVE_UIDS": st.column_config.NumberColumn("Alt UIDs", width="small"),
+                "CONFIDENCE_SCORE": st.column_config.TextColumn("Confidence", width="small"),
+                "CONFLICT_STATUS": st.column_config.TextColumn("Conflict Level", width="small"),
+                "OVERALL_STATUS": st.column_config.TextColumn("Overall Status", width="medium")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Export options
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv_data = display_df.to_csv(index=False)
+            st.download_button(
+                "📥 Download Optimized Bank",
+                csv_data,
+                f"optimized_question_bank_{uuid4().hex[:8]}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            if st.button("🚀 Deploy to Production", use_container_width=True):
+                st.info("🔧 This feature will implement the optimized UID assignments in the production database.")
+
 # Run the application
 if __name__ == "__main__":
     main()
-
-
-
-
-
