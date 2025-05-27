@@ -956,9 +956,34 @@ def run_snowflake_reference_query_all():
     limit = 10000
     offset = 0
     
+    # First, try to get available columns
+    columns_to_select = "HEADING_0, UID"
+    survey_title_available = False
+    
+    try:
+        with get_snowflake_engine().connect() as conn:
+            # Check if SURVEY_TITLE column exists
+            check_query = """
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_NAME = 'SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' 
+                AND TABLE_SCHEMA = 'DBT_SURVEY_MONKEY'
+                AND COLUMN_NAME = 'SURVEY_TITLE'
+            """
+            column_check = pd.read_sql(text(check_query), conn)
+            
+            if not column_check.empty:
+                columns_to_select = "HEADING_0, UID, SURVEY_TITLE"
+                survey_title_available = True
+                logger.info("SURVEY_TITLE column found, including in query")
+            else:
+                logger.warning("SURVEY_TITLE column not found, proceeding without it")
+    except Exception as e:
+        logger.warning(f"Could not check column existence: {e}, proceeding with basic columns")
+    
     while True:
-        query = """
-            SELECT HEADING_0, UID, SURVEY_TITLE
+        query = f"""
+            SELECT {columns_to_select}
             FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
             WHERE UID IS NOT NULL
             ORDER BY CAST(UID AS INTEGER) ASC
@@ -967,6 +992,61 @@ def run_snowflake_reference_query_all():
         try:
             with get_snowflake_engine().connect() as conn:
                 result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
+            
+def run_snowflake_reference_query_all():
+    """Fetch ALL reference questions from Snowflake with pagination"""
+    all_data = []
+    limit = 10000
+    offset = 0
+    
+    # First, try with SURVEY_TITLE, then fallback to basic query
+    queries_to_try = [
+        # Try with SURVEY_TITLE first
+        """
+            SELECT HEADING_0, UID, SURVEY_TITLE
+            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+            WHERE UID IS NOT NULL
+            ORDER BY CAST(UID AS INTEGER) ASC
+            LIMIT :limit OFFSET :offset
+        """,
+        # Fallback to basic query without SURVEY_TITLE
+        """
+            SELECT HEADING_0, UID
+            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+            WHERE UID IS NOT NULL
+            ORDER BY CAST(UID AS INTEGER) ASC
+            LIMIT :limit OFFSET :offset
+        """
+    ]
+    
+    query_used = None
+    survey_title_available = False
+    
+    # Test which query works
+    for i, test_query in enumerate(queries_to_try):
+        try:
+            with get_snowflake_engine().connect() as conn:
+                test_result = pd.read_sql(text(test_query), conn, params={"limit": 1, "offset": 0})
+                query_used = test_query
+                survey_title_available = 'SURVEY_TITLE' in test_result.columns
+                logger.info(f"Using query {i+1}, SURVEY_TITLE available: {survey_title_available}")
+                break
+        except Exception as e:
+            logger.warning(f"Query {i+1} failed: {e}")
+            continue
+    
+    if not query_used:
+        raise Exception("No working query found for Snowflake table")
+    
+    # Now fetch all data using the working query
+    while True:
+        try:
+            with get_snowflake_engine().connect() as conn:
+                result = pd.read_sql(text(query_used), conn, params={"limit": limit, "offset": offset})
+            
+            # Add SURVEY_TITLE column if it doesn't exist
+            if not survey_title_available and 'SURVEY_TITLE' not in result.columns:
+                result['SURVEY_TITLE'] = 'Unknown Survey'
             
             if result.empty:
                 break  # No more data
@@ -983,15 +1063,72 @@ def run_snowflake_reference_query_all():
                 
         except Exception as e:
             logger.error(f"Snowflake reference query failed at offset {offset}: {e}")
+            if "invalid identifier" in str(e).lower():
+                st.warning(
+                    f"⚠️ Column 'SURVEY_TITLE' not found in Snowflake table. "
+                    f"Survey categorization will use default values. "
+                    f"Consider adding SURVEY_TITLE to your Snowflake table schema."
+                )
             raise
     
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         logger.info(f"Total reference questions fetched: {len(final_df)}")
+        
+        # Ensure SURVEY_TITLE column exists for compatibility
+        if 'SURVEY_TITLE' not in final_df.columns:
+            final_df['SURVEY_TITLE'] = 'Unknown Survey'
+            
         return final_df
     else:
         logger.warning("No reference data fetched")
         return pd.DataFrame()
+
+# Add a helper function to check table schema
+def check_snowflake_table_schema():
+    """Check the available columns in the Snowflake table"""
+    try:
+        with get_snowflake_engine().connect() as conn:
+            schema_query = """
+                SELECT COLUMN_NAME, DATA_TYPE 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_NAME = 'SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' 
+                AND TABLE_SCHEMA = 'DBT_SURVEY_MONKEY'
+                ORDER BY ORDINAL_POSITION
+            """
+            schema_df = pd.read_sql(text(schema_query), conn)
+            return schema_df
+    except Exception as e:
+        logger.error(f"Could not check table schema: {e}")
+        return pd.DataFrame()
+
+# Enhanced survey categorization that works without SURVEY_TITLE
+def categorize_survey_from_question(question_text):
+    """
+    Fallback categorization based on question content when SURVEY_TITLE is not available
+    """
+    if not question_text or pd.isna(question_text):
+        return "Unknown"
+    
+    text_lower = str(question_text).lower()
+    
+    # Check for category indicators in question text
+    category_indicators = {
+        'Application': ['apply', 'application', 'register', 'signup', 'join'],
+        'Pre programme': ['before', 'pre-', 'baseline', 'preparation', 'ready'],
+        'Enrollment': ['welcome', 'start', 'begin', 'onboard', 'enroll'],
+        'Progress Review': ['progress', 'review', 'milestone', 'check', 'assessment'],
+        'Impact': ['impact', 'outcome', 'result', 'after', 'completion', 'effect'],
+        'GROW': ['GROW', 'goal', 'reality', 'options', 'will'],
+        'Feedback': ['feedback', 'satisfaction', 'rating', 'opinion', 'evaluate'],
+        'Pulse': ['pulse', 'quick', 'brief', 'temperature', 'snapshot']
+    }
+    
+    for category, keywords in category_indicators.items():
+        if any(keyword.lower() in text_lower for keyword in keywords):
+            return category
+    
+    return "Other"
 
 @st.cache_data
 def get_all_reference_questions():
@@ -1171,10 +1308,144 @@ if "snowflake" not in st.secrets or "surveymonkey" not in st.secrets:
     st.markdown('<div class="warning-card">⚠️ Missing secrets configuration for Snowflake or SurveyMonkey.</div>', unsafe_allow_html=True)
     st.stop()
 
-# Enhanced Home Page
-if st.session_state.page == "home":
+# Enhanced unique questions bank with fallback categorization
+def create_enhanced_unique_questions_bank(df_reference):
+    """
+    Enhanced unique questions bank with survey categorization and governance compliance
+    Now includes fallback categorization when SURVEY_TITLE is not available
+    """
+    if df_reference.empty:
+        return pd.DataFrame()
+    
+    logger.info(f"Processing {len(df_reference)} reference questions for enhanced unique bank")
+    
+    unique_questions = []
+    uid_groups = df_reference.groupby('uid')
+    
+    for uid, group in uid_groups:
+        if pd.isna(uid):
+            continue
+            
+        uid_questions = group['heading_0'].tolist()
+        best_question = get_best_question_for_uid(uid_questions)
+        
+        # Enhanced survey categorization with fallback
+        survey_titles = []
+        if 'SURVEY_TITLE' in group.columns:
+            survey_titles = group['SURVEY_TITLE'].dropna().unique()
+        
+        # Determine primary category with confidence scoring
+        category_votes = {}
+        category_confidence = 0.0
+        
+        if len(survey_titles) > 0 and not all(title == 'Unknown Survey' for title in survey_titles):
+            # Use survey titles for categorization
+            for title in survey_titles:
+                category = categorize_survey(title)
+                category_votes[category] = category_votes.get(category, 0) + 1
+            
+            if category_votes:
+                primary_category = max(category_votes, key=category_votes.get)
+                category_confidence = category_votes[primary_category] / len(survey_titles)
+            else:
+                primary_category = "Unknown"
+        else:
+            # Fallback: categorize based on question content
+            primary_category = categorize_survey_from_question(best_question)
+            category_confidence = 0.5  # Medium confidence for question-based categorization
+        
+        # Calculate governance compliance
+        governance_compliant = len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid']
+        
+        # Calculate quality metrics
+        quality_scores = [score_question_quality(q) for q in uid_questions]
+        avg_quality = np.mean(quality_scores)
+        quality_std = np.std(quality_scores) if len(quality_scores) > 1 else 0.0
+        
+        # Detect potential issues
+        issues = []
+        if not governance_compliant:
+            issues.append("governance_violation")
+        if avg_quality < UID_GOVERNANCE['quality_score_threshold']:
+            issues.append("low_quality")
+        if quality_std > 5.0:
+            issues.append("quality_inconsistency")
+        
+        if best_question:
+            unique_questions.append({
+                'uid': uid,
+                'best_question': best_question,
+                'standardized_question': standardize_question_format(best_question),
+                'total_variants': len(uid_questions),
+                'question_length': len(str(best_question)),
+                'question_words': len(str(best_question).split()),
+                'survey_category': primary_category,
+                'category_confidence': round(category_confidence, 2),
+                'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
+                'quality_score': round(avg_quality, 1),
+                'quality_std': round(quality_std, 1),
+                'governance_compliant': governance_compliant,
+                'issues': ', '.join(issues) if issues else 'none',
+                'created_date': datetime.now().isoformat(),
+                'last_updated': datetime.now().isoformat(),
+                'all_variants': uid_questions
+            })
+    
+    unique_df = pd.DataFrame(unique_questions)
+    logger.info(f"Created enhanced unique questions bank with {len(unique_df)} UIDs")
+    
+    # Sort by UID
+    if not unique_df.empty:
+        try:
+            unique_df['uid_numeric'] = pd.to_numeric(unique_df['uid'], errors='coerce')
+            unique_df = unique_df.sort_values(['uid_numeric', 'uid'], na_position='last')
+            unique_df = unique_df.drop('uid_numeric', axis=1)
+        except:
+            unique_df = unique_df.sort_values('uid')
+    
+    return unique_df
+
+# Add a data source information function
+def display_data_source_info():
+    """Display information about the data source and available columns"""
+    try:
+        schema_df = check_snowflake_table_schema()
+        
+        if not schema_df.empty:
+            st.markdown("### 📋 Snowflake Table Schema")
+            st.dataframe(schema_df, use_container_width=True)
+            
+            # Check for important columns
+            available_columns = schema_df['COLUMN_NAME'].tolist()
+            important_columns = ['HEADING_0', 'UID', 'SURVEY_TITLE', 'SURVEY_ID']
+            
+            st.markdown("### ✅ Column Availability")
+            for col in important_columns:
+                if col in available_columns:
+                    st.success(f"✅ {col} - Available")
+                else:
+                    st.warning(f"⚠️ {col} - Not Available")
+            
+            if 'SURVEY_TITLE' not in available_columns:
+                st.info(
+                    "💡 **Note**: SURVEY_TITLE column is not available in Snowflake. "
+                    "The system will use question content analysis for categorization with reduced accuracy."
+                )
+        else:
+            st.warning("⚠️ Could not retrieve table schema information")
+            
+    except Exception as e:
+        st.error(f"❌ Error checking data source: {e}")
+
+# Enhanced home page with data source info
+def enhanced_home_page():
+    """Enhanced home page with data source validation"""
     st.markdown("## 🏠 Enhanced UID Matcher Pro Dashboard")
     st.markdown("*Advanced semantic matching with AI governance and categorization*")
+    
+    # Data source validation
+    with st.expander("📊 Data Source Information", expanded=False):
+        display_data_source_info()
     
     # Enhanced dashboard metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -1205,6 +1476,7 @@ if st.session_state.page == "home":
         st.metric("📊 Categories", len(SURVEY_CATEGORIES))
         st.markdown('</div>', unsafe_allow_html=True)
     
+    # Rest of the home page content...
     st.markdown("---")
     
     # Enhanced features showcase
@@ -1227,7 +1499,7 @@ if st.session_state.page == "home":
         st.markdown("### 📊 Smart Categorization")
         st.markdown("• **Auto-Detection**: Smart survey category identification")
         st.markdown("• **8 Categories**: Application, Pre programme, Enrollment, Progress Review, Impact, GROW, Feedback, Pulse")
-        st.markdown("• **Category Analytics**: Cross-category quality analysis")
+        st.markdown("• **Fallback Analysis**: Question content analysis when survey titles unavailable")
         st.markdown("• **Governance by Category**: Category-specific compliance tracking")
         
         if st.button("📊 Explore Category Analysis", use_container_width=True):
@@ -1254,6 +1526,10 @@ if st.session_state.page == "home":
         if st.button("⭐ Enhanced Question Bank", use_container_width=True):
             st.session_state.page = "enhanced_unique_bank"
             st.rerun()
+
+# Update the home page handler
+if st.session_state.page == "home":
+    enhanced_home_page()
 
 # Enhanced Configure Survey Page
 elif st.session_state.page == "enhanced_configure_survey":
