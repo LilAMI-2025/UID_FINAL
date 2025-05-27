@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import requests
@@ -104,8 +105,9 @@ UID_GOVERNANCE = {
     'governance_enforcement': True
 }
 
-# Enhanced Question Standardization Rules
+# Enhanced Question Standardization Rules (Fixed)
 QUESTION_STANDARDIZATION = {
+    'standardization_enabled': True,  # Fixed: was missing in original
     'normalize_case': True,
     'remove_extra_spaces': True,
     'standardize_punctuation': True,
@@ -218,27 +220,28 @@ HEADING_REFERENCES = [
 # Enhanced Question Standardization Functions
 def standardize_question_format(question_text):
     """
-    Standardize question format using enhanced rules
+    Standardize question format using enhanced rules (Fixed)
     """
     if not question_text or pd.isna(question_text):
         return question_text
     
     text = str(question_text).strip()
     
-    if not QUESTION_STANDARDIZATION['standardization_enabled']:
+    # Check if standardization is enabled
+    if not QUESTION_STANDARDIZATION.get('standardization_enabled', True):
         return text
     
     # Normalize case
-    if QUESTION_STANDARDIZATION['normalize_case']:
+    if QUESTION_STANDARDIZATION.get('normalize_case', True):
         # Capitalize first letter, maintain proper nouns
         text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
     
     # Remove extra spaces
-    if QUESTION_STANDARDIZATION['remove_extra_spaces']:
+    if QUESTION_STANDARDIZATION.get('remove_extra_spaces', True):
         text = re.sub(r'\s+', ' ', text)
     
     # Standardize punctuation
-    if QUESTION_STANDARDIZATION['standardize_punctuation']:
+    if QUESTION_STANDARDIZATION.get('standardize_punctuation', True):
         # Ensure questions end with question mark
         if any(word in text.lower().split()[:3] for word in ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should']):
             if not text.endswith('?'):
@@ -250,7 +253,7 @@ def standardize_question_format(question_text):
         text = re.sub(r'[!]{2,}', '!', text)
     
     # Expand contractions
-    if QUESTION_STANDARDIZATION['expand_contractions']:
+    if QUESTION_STANDARDIZATION.get('expand_contractions', True):
         contractions = {
             "don't": "do not",
             "won't": "will not",
@@ -271,7 +274,7 @@ def standardize_question_format(question_text):
             text = text.replace(contraction.title(), expansion.title())
     
     # Fix common typos
-    if QUESTION_STANDARDIZATION['fix_common_typos']:
+    if QUESTION_STANDARDIZATION.get('fix_common_typos', True):
         typo_fixes = {
             'teh': 'the',
             'adn': 'and',
@@ -294,7 +297,7 @@ def standardize_question_format(question_text):
         text = ' '.join(words)
     
     # Standardize question formats
-    if QUESTION_STANDARDIZATION['standardize_formats']:
+    if QUESTION_STANDARDIZATION.get('standardize_formats', True):
         # Apply enhanced synonym mapping
         text_lower = text.lower()
         for phrase, replacement in ENHANCED_SYNONYM_MAP.items():
@@ -696,7 +699,7 @@ def enhanced_configure_survey_page():
     
     df_target = None
     
-  # Handle different input methods
+    # Handle different input methods
     if input_method == "Upload CSV File":
         uploaded_file = st.file_uploader("Choose CSV file", type="csv")
         if uploaded_file:
@@ -2174,7 +2177,7 @@ with st.sidebar:
         st.markdown(f"• Quality threshold: {UID_GOVERNANCE['quality_score_threshold']}")
         st.markdown(f"• Semantic matching: {'✅' if UID_GOVERNANCE['semantic_matching_enabled'] else '❌'}")
         st.markdown(f"• Standardization: {'✅' if QUESTION_STANDARDIZATION.get('standardization_enabled', True) else '❌'}")
-        st.markdown(f"• Governance enforcement: {'✅' if UID_GOVERNANCE['governance_enforcement'] else '❌'}")
+        st.markdown(f"• Governance enforcement: {'✅' if UID_GOVERNANCE.get('governance_enforcement', True) else '❌'}")
     
     st.markdown("---")
     
@@ -2496,7 +2499,696 @@ elif st.session_state.page == "enhanced_data_quality":
         st.markdown(f'<div class="warning-card">❌ Error loading data quality dashboard: {e}</div>', unsafe_allow_html=True)
 
 # Add other existing pages (keeping the original ones for backward compatibility)
-# ... (existing pages like view_surveys, categorized_questions, etc.)
+# Fixed enhanced configure survey page for SurveyMonkey data structure
+def enhanced_configure_survey_page():
+    """Enhanced configure survey page with semantic matching and governance - fixed for data structure"""
+    st.markdown("## ⚙️ Enhanced Configure Survey with Semantic Matching")
+    st.markdown("*Upload CSV or fetch from SurveyMonkey with advanced UID assignment*")
+    st.markdown("*Matching SurveyMonkey questions against Snowflake HEADING_0 and UID data*")
+    
+    # Governance settings
+    with st.expander("⚖️ Governance & Matching Settings", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            UID_GOVERNANCE['semantic_matching_enabled'] = st.checkbox(
+                "🧠 Enable Semantic Matching", 
+                value=UID_GOVERNANCE.get('semantic_matching_enabled', True),
+                help="Use AI to find semantically similar questions"
+            )
+            
+            QUESTION_STANDARDIZATION['standardization_enabled'] = st.checkbox(
+                "📝 Enable Question Standardization", 
+                value=QUESTION_STANDARDIZATION.get('standardization_enabled', True),
+                help="Standardize question formats before matching"
+            )
+        
+        with col2:
+            UID_GOVERNANCE['max_variations_per_uid'] = st.number_input(
+                "📊 Max Variations per UID", 
+                min_value=1, 
+                max_value=200, 
+                value=UID_GOVERNANCE['max_variations_per_uid'],
+                help="Maximum number of question variations allowed per UID"
+            )
+            
+            UID_GOVERNANCE['semantic_similarity_threshold'] = st.slider(
+                "🎯 Semantic Similarity Threshold", 
+                min_value=0.5, 
+                max_value=1.0, 
+                value=UID_GOVERNANCE['semantic_similarity_threshold'],
+                step=0.05,
+                help="Minimum similarity score for semantic matching"
+            )
+        
+        with col3:
+            UID_GOVERNANCE['governance_enforcement'] = st.checkbox(
+                "⚖️ Enforce Governance Rules", 
+                value=UID_GOVERNANCE['governance_enforcement'],
+                help="Strictly enforce governance rules during UID assignment"
+            )
+            
+            UID_GOVERNANCE['auto_consolidate_threshold'] = st.slider(
+                "🔄 Auto-Consolidate Threshold", 
+                min_value=0.8, 
+                max_value=1.0, 
+                value=UID_GOVERNANCE['auto_consolidate_threshold'],
+                step=0.02,
+                help="Automatically consolidate questions above this similarity"
+            )
+    
+    # Data source information
+    st.markdown('<div class="info-card">', unsafe_allow_html=True)
+    st.markdown("### 📊 Data Flow")
+    st.markdown("• **Reference Data**: Snowflake `HEADING_0` and `UID` columns")
+    st.markdown("• **Target Data**: SurveyMonkey questions and choices")
+    st.markdown("• **Matching Process**: AI semantic matching + TF-IDF fallback")
+    st.markdown("• **Output**: SurveyMonkey questions assigned with matched UIDs")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Input method selection
+    input_method = st.radio(
+        "📥 Choose Input Method:",
+        ["Upload CSV File", "Fetch from SurveyMonkey", "Enter SurveyMonkey Survey ID"],
+        horizontal=True
+    )
+    
+    df_target = None
+    
+    # Handle different input methods
+    if input_method == "Upload CSV File":
+        uploaded_file = st.file_uploader("Choose CSV file", type="csv")
+        if uploaded_file:
+            try:
+                df_target = pd.read_csv(uploaded_file)
+                st.success(f"✅ CSV uploaded successfully! Found {len(df_target)} rows.")
+                
+                # Validate required columns
+                required_cols = ['heading_0']
+                missing_cols = [col for col in required_cols if col not in df_target.columns]
+                if missing_cols:
+                    st.error(f"❌ Missing required columns: {missing_cols}")
+                    df_target = None
+                else:
+                    # Add missing optional columns with SurveyMonkey-like defaults
+                    optional_cols = {
+                        'survey_title': 'Uploaded CSV Survey',
+                        'survey_id': 'uploaded_csv',
+                        'is_choice': False,
+                        'question_category': 'Main Question/Multiple Choice',
+                        'position': range(1, len(df_target) + 1)
+                    }
+                    for col, default_val in optional_cols.items():
+                        if col not in df_target.columns:
+                            if col == 'position':
+                                df_target[col] = list(default_val)
+                            else:
+                                df_target[col] = default_val
+                    
+                    st.info(f"📊 Preview of uploaded data:")
+                    st.dataframe(df_target.head(), use_container_width=True)
+                    
+            except Exception as e:
+                st.error(f"❌ Error reading CSV: {e}")
+    
+    elif input_method == "Fetch from SurveyMonkey":
+        try:
+            token = st.secrets["surveymonkey"]["token"]
+            surveys = get_surveys(token)
+            
+            if surveys:
+                survey_options = {f"{s['id']} - {s['title']}": s['id'] for s in surveys}
+                selected_survey = st.selectbox("📋 Select Survey:", list(survey_options.keys()))
+                
+                if selected_survey and st.button("📥 Fetch Survey Data"):
+                    survey_id = survey_options[selected_survey]
+                    
+                    with st.spinner("🔄 Fetching survey data from SurveyMonkey..."):
+                        survey_details = get_survey_details(survey_id, token)
+                        questions = extract_questions(survey_details)
+                        df_target = pd.DataFrame(questions)
+                        
+                        st.success(f"✅ Fetched {len(df_target)} questions from SurveyMonkey!")
+                        st.info(f"📊 Preview of SurveyMonkey data:")
+                        st.dataframe(df_target.head(), use_container_width=True)
+            else:
+                st.warning("⚠️ No surveys found in your SurveyMonkey account.")
+                
+        except Exception as e:
+            st.error(f"❌ SurveyMonkey API Error: {e}")
+    
+    elif input_method == "Enter SurveyMonkey Survey ID":
+        survey_id = st.text_input("🆔 Enter Survey ID:")
+        if survey_id and st.button("📥 Fetch Survey by ID"):
+            try:
+                token = st.secrets["surveymonkey"]["token"]
+                with st.spinner("🔄 Fetching survey data from SurveyMonkey..."):
+                    survey_details = get_survey_details(survey_id, token)
+                    questions = extract_questions(survey_details)
+                    df_target = pd.DataFrame(questions)
+                    
+                    st.success(f"✅ Fetched {len(df_target)} questions from survey {survey_id}!")
+                    st.info(f"📊 Preview of SurveyMonkey data:")
+                    st.dataframe(df_target.head(), use_container_width=True)
+                    
+            except Exception as e:
+                st.error(f"❌ Error fetching survey {survey_id}: {e}")
+    
+    # Enhanced UID Matching Process
+    if df_target is not None and not df_target.empty:
+        st.markdown("---")
+        st.markdown("### 🧠 Enhanced UID Matching: SurveyMonkey ↔ Snowflake")
+        
+        # Load reference data from Snowflake
+        try:
+            with st.spinner("🔄 Loading Snowflake reference data (HEADING_0, UID)..."):
+                df_reference = get_all_reference_questions()
+                
+            if df_reference.empty:
+                st.warning("⚠️ No reference data available from Snowflake. Creating new UIDs for all questions.")
+                # Process without reference data
+                df_final = process_questions_without_reference(df_target)
+                st.session_state.df_final = df_final
+                st.session_state.df_target = df_target
+                
+                st.info("✅ Processed questions without reference matching (all new UIDs assigned)")
+                
+            else:
+                st.info(f"📊 Loaded {len(df_reference)} reference questions from Snowflake")
+                
+                # Show reference data summary
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    unique_uids = df_reference['uid'].nunique()
+                    st.metric("🆔 Unique UIDs in Snowflake", unique_uids)
+                with col2:
+                    avg_variations = len(df_reference) / unique_uids if unique_uids > 0 else 0
+                    st.metric("📊 Avg Variations per UID", f"{avg_variations:.1f}")
+                with col3:
+                    governance_compliant_uids = len(df_reference.groupby('uid').size()[
+                        df_reference.groupby('uid').size() <= UID_GOVERNANCE['max_variations_per_uid']
+                    ])
+                    compliance_rate = (governance_compliant_uids / unique_uids * 100) if unique_uids > 0 else 0
+                    st.metric("⚖️ Governance Compliance", f"{compliance_rate:.1f}%")
+                
+                # Show target data summary
+                st.markdown("#### 📋 Target Data Summary (SurveyMonkey)")
+                main_questions = len(df_target[df_target.get('is_choice', False) == False])
+                choice_questions = len(df_target[df_target.get('is_choice', False) == True])
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("❓ Main Questions", main_questions)
+                with col2:
+                    st.metric("🔘 Choice Options", choice_questions)
+                with col3:
+                    st.metric("📝 Total Items", len(df_target))
+                
+                # Enhanced UID matching with governance
+                if st.button("🧠 Start Enhanced UID Matching", type="primary"):
+                    with st.spinner("🔄 Processing SurveyMonkey questions with AI semantic matching..."):
+                        
+                        # Show matching process steps
+                        with st.expander("📋 Matching Process Steps", expanded=True):
+                            st.write("1. 🧠 **Semantic Analysis**: AI models compare question meanings")
+                            st.write("2. ⚖️ **Governance Check**: Ensure compliance with variation limits")
+                            st.write("3. 📝 **Standardization**: Normalize question formats")
+                            st.write("4. 🔄 **TF-IDF Fallback**: Traditional keyword matching for unmatched questions")
+                            st.write("5. ✅ **Final Assignment**: Assign UIDs with confidence scores")
+                        
+                        df_final = enhanced_uid_matching_process(df_target, df_reference)
+                        
+                        if df_final is not None:
+                            st.session_state.df_final = df_final
+                            st.session_state.df_target = df_target
+                            
+                            # Display enhanced results
+                            display_enhanced_matching_results(df_final, df_reference)
+                        else:
+                            st.error("❌ Enhanced UID matching failed")
+                            
+        except Exception as e:
+            st.error(f"❌ Error loading Snowflake reference data: {e}")
+            # Fallback to processing without reference
+            if st.button("🔄 Process Without Snowflake Reference Data"):
+                df_final = process_questions_without_reference(df_target)
+                st.session_state.df_final = df_final
+                st.session_state.df_target = df_target
+                
+                st.info("✅ Processed questions without reference matching")
+                
+                # Show basic results
+                main_questions = len(df_final[df_final.get('is_choice', False) == False])
+                st.success(f"✅ Assigned new UIDs to {main_questions} main questions")
+    
+    # Show additional help
+    with st.expander("❓ How Enhanced Matching Works"):
+        st.markdown("""
+        ### 🧠 Enhanced Semantic Matching Process
+        
+        1. **Data Loading**: 
+           - Snowflake: `HEADING_0` (questions) + `UID` (existing assignments)
+           - SurveyMonkey: Questions and multiple choice options
+        
+        2. **AI Semantic Analysis**:
+           - Uses transformer models to understand question meaning
+           - Compares SurveyMonkey questions to Snowflake questions
+           - Finds semantically similar questions even with different wording
+        
+        3. **Governance Compliance**:
+           - Checks variation limits per UID
+           - Enforces quality thresholds
+           - Prevents UID conflicts
+        
+        4. **Question Standardization**:
+           - Normalizes question formats
+           - Fixes common typos and inconsistencies
+           - Applies consistent terminology
+        
+        5. **Confidence Scoring**:
+           - Each match gets a confidence score (0-1)
+           - Higher scores indicate stronger semantic similarity
+           - Transparent decision making
+        
+        ### 📊 Expected Results
+        - **High confidence matches**: Questions with clear semantic similarity
+        - **Medium confidence matches**: Possible matches requiring review  
+        - **New UID assignments**: Questions with no similar existing questions
+        - **Governance compliance**: All assignments follow configured rules
+def enhanced_uid_matching_process(df_target, df_reference):
+    """
+    Enhanced UID matching process with semantic analysis and governance
+    Fixed to work with Snowflake data structure (HEADING_0, UID only)
+    """
+    try:
+        # Step 1: Prepare reference data with standardization
+        logger.info("Step 1: Preparing Snowflake reference data...")
+        
+        # Create existing UIDs data structure for semantic matching
+        existing_uids_data = {}
+        for uid in df_reference['uid'].unique():
+            if pd.notna(uid):
+                uid_questions = df_reference[df_reference['uid'] == uid]['heading_0'].tolist()
+                # Remove any NaN questions
+                uid_questions = [q for q in uid_questions if pd.notna(q) and str(q).strip()]
+                
+                if uid_questions:  # Only add if there are valid questions
+                    best_question = get_best_question_for_uid(uid_questions)
+                    
+                    existing_uids_data[str(uid)] = {
+                        'best_question': best_question,
+                        'variation_count': len(uid_questions),
+                        'all_questions': uid_questions
+                    }
+        
+        logger.info(f"Prepared {len(existing_uids_data)} existing UIDs for matching")
+        
+        # Step 2: Process target questions with enhanced matching
+        logger.info("Step 2: Processing SurveyMonkey target questions...")
+        
+        df_enhanced = df_target.copy()
+        
+        # Add columns for enhanced tracking
+        enhanced_columns = [
+            'standardized_question', 'question_pattern_category', 'question_pattern_type',
+            'semantic_uid', 'semantic_confidence', 'semantic_match_status',
+            'governance_compliant', 'match_method', 'quality_score'
+        ]
+        
+        for col in enhanced_columns:
+            if col not in df_enhanced.columns:
+                df_enhanced[col] = None
+        
+        # Process each question
+        for idx, row in df_enhanced.iterrows():
+            question_text = row['heading_0']
+            survey_title = row.get('survey_title', '')
+            
+            if pd.isna(question_text) or str(question_text).strip() == '':
+                continue
+            
+            # Skip choice questions - they inherit parent UID
+            if row.get('is_choice', False):
+                continue
+            
+            # Skip heading questions
+            if row.get('question_category') == 'Heading':
+                continue
+            
+            # Detect question pattern
+            question_pattern = detect_question_pattern(str(question_text))
+            df_enhanced.at[idx, 'question_pattern_category'] = question_pattern['category']
+            df_enhanced.at[idx, 'question_pattern_type'] = question_pattern['pattern']
+            
+            # Get survey category (inferred from question since survey_title might not be meaningful)
+            survey_category = categorize_question_by_content(str(question_text))
+            
+            # Apply enhanced UID assignment
+            uid_result = assign_uid_with_full_governance(
+                str(question_text), 
+                existing_uids_data, 
+                survey_category, 
+                question_pattern
+            )
+            
+            # Update dataframe with results
+            df_enhanced.at[idx, 'semantic_uid'] = uid_result['uid']
+            df_enhanced.at[idx, 'semantic_confidence'] = uid_result['confidence']
+            df_enhanced.at[idx, 'semantic_match_status'] = uid_result['match_status']
+            df_enhanced.at[idx, 'governance_compliant'] = uid_result['governance_compliant']
+            df_enhanced.at[idx, 'match_method'] = uid_result['method']
+            df_enhanced.at[idx, 'standardized_question'] = uid_result['standardized_question']
+            df_enhanced.at[idx, 'quality_score'] = score_question_quality(str(question_text))
+            
+            # Update existing UIDs data if new UID was created
+            if uid_result['method'] == 'new_assignment':
+                existing_uids_data[uid_result['uid']] = {
+                    'best_question': uid_result['standardized_question'],
+                    'variation_count': 1,
+                    'all_questions': [str(question_text)]
+                }
+            elif uid_result['uid'] in existing_uids_data:
+                # Update variation count
+                existing_uids_data[uid_result['uid']]['variation_count'] += 1
+                existing_uids_data[uid_result['uid']]['all_questions'].append(str(question_text))
+        
+        # Step 3: Apply traditional TF-IDF matching as fallback
+        logger.info("Step 3: Applying TF-IDF matching as fallback for unmatched questions...")
+        
+        # For questions without semantic matches, try TF-IDF
+        unmatched_mask = df_enhanced['semantic_uid'].isna()
+        unmatched_count = unmatched_mask.sum()
+        
+        if unmatched_count > 0:
+            logger.info(f"Found {unmatched_count} unmatched questions, applying TF-IDF fallback...")
+            
+            df_unmatched = df_enhanced[unmatched_mask].copy()
+            
+            # Only process non-choice, non-heading questions
+            processable_mask = (
+                (df_unmatched.get('is_choice', False) == False) & 
+                (df_unmatched.get('question_category', '') != 'Heading') &
+                (df_unmatched['heading_0'].notna())
+            )
+            
+            if processable_mask.any():
+                df_processable = df_unmatched[processable_mask].copy()
+                
+                try:
+                    df_tfidf_results = compute_tfidf_matches(df_reference, df_processable, ENHANCED_SYNONYM_MAP)
+                    
+                    # Merge TF-IDF results back
+                    for tfidf_idx, tfidf_row in df_tfidf_results.iterrows():
+                        if pd.notna(tfidf_row.get('Suggested_UID')):
+                            # Find the original index in df_enhanced
+                            original_indices = df_enhanced[
+                                (df_enhanced['heading_0'] == tfidf_row['heading_0']) & 
+                                (df_enhanced['semantic_uid'].isna())
+                            ].index
+                            
+                            if len(original_indices) > 0:
+                                original_idx = original_indices[0]
+                                df_enhanced.at[original_idx, 'semantic_uid'] = tfidf_row['Suggested_UID']
+                                df_enhanced.at[original_idx, 'semantic_confidence'] = tfidf_row['Similarity']
+                                df_enhanced.at[original_idx, 'match_method'] = 'tfidf_fallback'
+                                df_enhanced.at[original_idx, 'semantic_match_status'] = 'tfidf_match'
+                                df_enhanced.at[original_idx, 'governance_compliant'] = tfidf_row.get('Governance_Status', 'N/A') == '✅'
+                
+                except Exception as e:
+                    logger.warning(f"TF-IDF fallback failed: {e}")
+        
+        # Step 4: Finalize results
+        logger.info("Step 4: Finalizing enhanced results...")
+        
+        # Set Final_UID based on semantic results
+        df_enhanced['Final_UID'] = df_enhanced['semantic_uid']
+        df_enhanced['configured_final_UID'] = df_enhanced['semantic_uid']
+        
+        # Handle choice questions - inherit parent UID
+        for idx, row in df_enhanced.iterrows():
+            if row.get('is_choice', False) and pd.notna(row.get('parent_question')):
+                parent_questions = df_enhanced[
+                    (df_enhanced['heading_0'] == row['parent_question']) & 
+                    (df_enhanced.get('is_choice', False) == False)
+                ]
+                if not parent_questions.empty:
+                    parent_uid = parent_questions.iloc[0]['Final_UID']
+                    df_enhanced.at[idx, 'Final_UID'] = parent_uid
+                    df_enhanced.at[idx, 'configured_final_UID'] = parent_uid
+                    df_enhanced.at[idx, 'match_method'] = 'inherited_from_parent'
+        
+        # Add enhanced match confidence and type
+        df_enhanced['Final_Match_Type'] = df_enhanced.apply(lambda row: 
+            f"🧠 {row['match_method']}" if pd.notna(row['Final_UID']) else "❌ No match", axis=1)
+        
+        # Add governance status
+        df_enhanced['Final_Governance'] = df_enhanced['governance_compliant'].apply(
+            lambda x: "✅ Compliant" if x else "⚠️ Violation" if pd.notna(x) else "N/A")
+        
+        # Detect conflicts
+        df_enhanced = detect_uid_conflicts(df_enhanced)
+        
+        # Add survey categorization based on question content
+        df_enhanced['survey_category'] = df_enhanced['heading_0'].apply(
+            lambda x: categorize_question_by_content(str(x)) if pd.notna(x) else 'Unknown'
+        )
+        
+        logger.info("Enhanced UID matching completed successfully")
+        return df_enhanced
+        
+    except Exception as e:
+        logger.error(f"Enhanced UID matching process failed: {e}")
+        st.error(f"❌ Enhanced matching failed: {e}")
+        return None
+
+def display_enhanced_matching_results(df_final, df_reference):
+    """
+    Display enhanced matching results with governance and semantic analysis
+    Fixed for the corrected data structure
+    """
+    st.markdown("### 🎯 Enhanced Matching Results: SurveyMonkey ↔ Snowflake")
+    
+    # Enhanced summary metrics
+    total_questions = len(df_final[df_final.get('is_choice', False) == False])
+    matched_questions = len(df_final[(df_final.get('is_choice', False) == False) & (df_final['Final_UID'].notna())])
+    semantic_matches = len(df_final[df_final['match_method'].str.contains('semantic', na=False)])
+    tfidf_matches = len(df_final[df_final['match_method'].str.contains('tfidf', na=False)])
+    new_assignments = len(df_final[df_final['match_method'] == 'new_assignment'])
+    governance_compliant = len(df_final[df_final['governance_compliant'] == True])
+    
+    # Display metrics in organized layout
+    st.markdown("#### 📊 Matching Summary")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        match_rate = (matched_questions / total_questions * 100) if total_questions > 0 else 0
+        st.metric("🎯 Match Rate", f"{match_rate:.1f}%", f"{matched_questions}/{total_questions}")
+    
+    with col2:
+        semantic_rate = (semantic_matches / total_questions * 100) if total_questions > 0 else 0
+        st.metric("🧠 Semantic Matches", f"{semantic_rate:.1f}%", f"{semantic_matches} questions")
+    
+    with col3:
+        tfidf_rate = (tfidf_matches / total_questions * 100) if total_questions > 0 else 0
+        st.metric("📊 TF-IDF Matches", f"{tfidf_rate:.1f}%", f"{tfidf_matches} questions")
+    
+    with col4:
+        new_rate = (new_assignments / total_questions * 100) if total_questions > 0 else 0
+        st.metric("🆕 New UIDs", f"{new_rate:.1f}%", f"{new_assignments} questions")
+    
+    with col5:
+        governance_rate = (governance_compliant / len(df_final) * 100) if len(df_final) > 0 else 0
+        st.metric("⚖️ Governance Rate", f"{governance_rate:.1f}%")
+    
+    # Confidence distribution
+    if 'semantic_confidence' in df_final.columns:
+        avg_confidence = df_final['semantic_confidence'].mean()
+        if pd.notna(avg_confidence):
+            st.markdown("#### 📈 Confidence Analysis")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("📊 Average Confidence", f"{avg_confidence:.3f}")
+            
+            with col2:
+                high_confidence = len(df_final[df_final['semantic_confidence'] > 0.8])
+                st.metric("🎯 High Confidence (>0.8)", high_confidence)
+            
+            with col3:
+                low_confidence = len(df_final[df_final['semantic_confidence'] < 0.5])
+                st.metric("⚠️ Low Confidence (<0.5)", low_confidence)
+    
+    # Matching method breakdown
+    st.markdown("#### 📋 Matching Method Breakdown")
+    if 'match_method' in df_final.columns:
+        method_counts = df_final[df_final['match_method'].notna()]['match_method'].value_counts()
+        
+        if not method_counts.empty:
+            method_df = pd.DataFrame({
+                'Method': method_counts.index,
+                'Count': method_counts.values,
+                'Percentage': (method_counts.values / len(df_final) * 100).round(1),
+                'Description': method_counts.index.map({
+                    'semantic_match': '🧠 AI found similar question in Snowflake',
+                    'new_assignment': '🆕 No match found, assigned new UID',
+                    'tfidf_fallback': '📊 Keyword-based match from Snowflake',
+                    'auto_consolidate': '🔄 Automatically consolidated with existing',
+                    'inherited_from_parent': '👨‍👩‍👧‍👦 Choice inherited parent question UID'
+                })
+            }
+            
+            st.dataframe(method_df, use_container_width=True, hide_index=True)
+    
+    # Enhanced results display with filtering
+    st.markdown("#### 🔍 Detailed Results")
+    
+    # Filter options
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        show_method = st.selectbox("Filter by Method", 
+                                 ["All"] + list(df_final['match_method'].dropna().unique()) if 'match_method' in df_final.columns else ["All"])
+    
+    with col2:
+        show_governance = st.selectbox("Filter by Governance", 
+                                     ["All", "Compliant", "Violations"])
+    
+    with col3:
+        confidence_options = ["All"]
+        if 'semantic_confidence' in df_final.columns and df_final['semantic_confidence'].notna().any():
+            confidence_options.extend(["High (>0.8)", "Medium (0.5-0.8)", "Low (<0.5)"])
+        show_confidence = st.selectbox("Filter by Confidence", confidence_options)
+    
+    with col4:
+        question_type = st.selectbox("Question Type", ["All", "Main Questions Only", "Choices Only"])
+    
+    # Apply filters
+    display_df = df_final.copy()
+    
+    if show_method != "All" and 'match_method' in display_df.columns:
+        display_df = display_df[display_df['match_method'] == show_method]
+    
+    if show_governance == "Compliant" and 'governance_compliant' in display_df.columns:
+        display_df = display_df[display_df['governance_compliant'] == True]
+    elif show_governance == "Violations" and 'governance_compliant' in display_df.columns:
+        display_df = display_df[display_df['governance_compliant'] == False]
+    
+    if 'semantic_confidence' in display_df.columns:
+        if show_confidence == "High (>0.8)":
+            display_df = display_df[display_df['semantic_confidence'] > 0.8]
+        elif show_confidence == "Medium (0.5-0.8)":
+            display_df = display_df[(display_df['semantic_confidence'] >= 0.5) & 
+                                  (display_df['semantic_confidence'] <= 0.8)]
+        elif show_confidence == "Low (<0.5)":
+            display_df = display_df[display_df['semantic_confidence'] < 0.5]
+    
+    if question_type == "Main Questions Only":
+        display_df = display_df[display_df.get('is_choice', False) == False]
+    elif question_type == "Choices Only":
+        display_df = display_df[display_df.get('is_choice', False) == True]
+    
+    # Enhanced display columns
+    base_columns = ['heading_0', 'Final_UID']
+    optional_columns = [
+        ('standardized_question', 'Standardized Question'),
+        ('semantic_confidence', 'Confidence'),
+        ('match_method', 'Method'),
+        ('Final_Governance', 'Governance'),
+        ('quality_score', 'Quality'),
+        ('question_pattern_category', 'Pattern'),
+        ('survey_category', 'Category')
+    ]
+    
+    display_columns = base_columns.copy()
+    column_config = {
+        "heading_0": st.column_config.TextColumn("Original Question", width="large"),
+        "Final_UID": st.column_config.TextColumn("Assigned UID", width="small")
+    }
+    
+    # Add available optional columns
+    for col_name, col_display in optional_columns:
+        if col_name in display_df.columns:
+            display_columns.append(col_name)
+            if col_name == 'semantic_confidence':
+                column_config[col_name] = st.column_config.NumberColumn(col_display, format="%.3f", width="small")
+            elif col_name == 'quality_score':
+                column_config[col_name] = st.column_config.NumberColumn(col_display, format="%.1f", width="small")
+            else:
+                column_config[col_name] = st.column_config.TextColumn(col_display, width="medium")
+    
+    if not display_df.empty:
+        st.dataframe(
+            display_df[display_columns],
+            column_config=column_config,
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # Enhanced download options
+        st.markdown("---")
+        st.markdown("#### 📥 Download Results")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.download_button(
+                "📥 Download All Results",
+                df_final.to_csv(index=False),
+                f"enhanced_uid_results_{uuid4()}.csv",
+                "text/csv",
+                use_container_width=True,
+                help="Download complete results with all columns"
+            )
+        
+        with col2:
+            # Create summary report
+            summary_data = {
+                'total_questions': total_questions,
+                'matched_questions': matched_questions,
+                'match_rate': f"{match_rate:.1f}%",
+                'semantic_matches': semantic_matches,
+                'tfidf_matches': tfidf_matches,
+                'new_assignments': new_assignments,
+                'governance_compliant': governance_compliant,
+                'avg_confidence': f"{avg_confidence:.3f}" if pd.notna(avg_confidence) else "N/A"
+            }
+            
+            st.download_button(
+                "📊 Download Summary Report",
+                json.dumps(summary_data, indent=2),
+                f"matching_summary_{uuid4()}.json",
+                "application/json",
+                use_container_width=True,
+                help="Download summary statistics"
+            )
+        
+        with col3:
+            # Create governance report if there are violations
+            governance_issues = df_final[df_final.get('governance_compliant', True) == False]
+            if not governance_issues.empty:
+                st.download_button(
+                    "⚖️ Download Governance Issues",
+                    governance_issues.to_csv(index=False),
+                    f"governance_issues_{uuid4()}.csv",
+                    "text/csv",
+                    use_container_width=True,
+                    help="Download questions with governance violations"
+                )
+            else:
+                st.success("✅ No governance violations detected!")
+    
+    else:
+        st.info("ℹ️ No results match the current filters.")
+    
+    # Success message
+    if matched_questions > 0:
+        st.markdown('<div class="success-card">', unsafe_allow_html=True)
+        st.markdown(f"### ✅ Enhanced Matching Completed Successfully!")
+        st.markdown(f"• **{semantic_matches}** questions matched using AI semantic analysis")
+        st.markdown(f"• **{tfidf_matches}** questions matched using TF-IDF keyword analysis") 
+        st.markdown(f"• **{new_assignments}** questions assigned new UIDs")
+        st.markdown(f"• **{match_rate:.1f}%** overall match rate achieved")
+        st.markdown('</div>', unsafe_allow_html=True)
 
 else:
     st.markdown('<div class="warning-card">⚠️ Page not found. Please use the navigation menu.</div>', unsafe_allow_html=True)
@@ -2508,7 +3200,4 @@ def detect_uid_conflicts(df_target):
         lambda x: "⚠️ Conflict" if pd.notnull(x) and x in duplicate_uids else ""
     )
     return df_target
-
-
-
 
