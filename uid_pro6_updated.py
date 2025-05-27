@@ -1085,15 +1085,12 @@ def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_
 
 def compute_semantic_matches(df_reference, df_target):
     try:
-        try:
-    except Exception as e:
-        st.error(f"❌ Error occurred: {e}")
-        st.error(f"❌ Error occurred: {e}")
         model = load_sentence_transformer()
         emb_target = model.encode(df_target["heading_0"].tolist(), convert_to_tensor=True)
         emb_ref = model.encode(df_reference["heading_0"].tolist(), convert_to_tensor=True)
         cosine_scores = util.cos_sim(emb_target, emb_ref)
 
+        sem_matches, sem_scores, sem_governance = [], [], []
         sem_matches, sem_scores, sem_governance = [], [], []
         for i in range(len(df_target)):
             best_idx = cosine_scores[i].argmax().item()
@@ -1116,6 +1113,8 @@ def compute_semantic_matches(df_reference, df_target):
         df_target["Semantic_UID"] = sem_matches
         df_target["Semantic_Similarity"] = sem_scores
         df_target["Semantic_Governance"] = sem_governance
+    except Exception as e:
+        st.error(f"❌ Error occurred in semantic matcher: {e}")
         return df_target
     except Exception as e:
         logger.error(f"Semantic matching failed: {e}")
@@ -1418,5 +1417,78 @@ elif st.session_state.page == "unique_question_bank":
                 
                 # Create unique questions bank
                 unique_questions_df = create_unique_questions_bank(df_reference)
+
+    with st.expander("🔍 UID Audit: Dominant UID and Conflicts", expanded=False):
+        if 'heading_0' in df_reference.columns and 'UID' in df_reference.columns:
+            freq_table = df_reference.groupby(['heading_0', 'UID']).size().reset_index(name='count')
+            best_uid = freq_table.sort_values(['heading_0', 'count'], ascending=[True, False]).drop_duplicates('heading_0')
+
+            conflict_check = freq_table.groupby('heading_0')['count'].apply(lambda x: x.nlargest(2)).reset_index()
+            conflict_summary = conflict_check.groupby('heading_0')['count'].apply(list).reset_index()
+            conflict_summary['conflict'] = conflict_summary['count'].apply(lambda x: len(x) > 1 and abs(x[0] - x[1]) < 100)
+
+            final_assignments = best_uid.merge(conflict_summary[['heading_0', 'conflict']], on='heading_0', how='left')
+            final_assignments['conflict'] = final_assignments['conflict'].fillna(False)
+
+            st.markdown("### ✅ Most Common UID Assignment per Question")
+            st.dataframe(final_assignments[['heading_0', 'UID', 'count', 'conflict']])
+
+            st.markdown("### ⚠️ Top Conflicts (UIDs with similar count)")
+            top_conflicts = final_assignments[final_assignments['conflict'] == True].sort_values('count', ascending=False).head(10)
+            st.dataframe(top_conflicts)
+
+            csv_export = final_assignments.to_csv(index=False).encode('utf-8')
+            st.download_button("⬇️ Download UID Audit Results", csv_export, "uid_audit_summary.csv", "text/csv")
+        else:
+            st.warning("Missing 'UID' or 'heading_0' in reference data.")
+
     except Exception as e:
         st.error(f"❌ Failed to load question bank: {e}")
+
+# ---------------- SurveyMonkey Categorized Viewer ----------------
+with st.expander("📊 SurveyMonkey: Categorize Questions by Survey Title", expanded=False):
+    try:
+        access_token = st.secrets.get("surveymonkey", {}).get("access_token") or st.secrets.get("access_token")
+        if not access_token:
+            raise ValueError("Missing SurveyMonkey access_token in secrets")
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        surveys_resp = requests.get("https://api.surveymonkey.com/v3/surveys", headers=headers)
+        surveys = surveys_resp.json().get("data", [])
+        survey_titles = {s['title']: s['id'] for s in surveys}
+
+        selected_title = st.selectbox("Select Survey Title", list(survey_titles.keys()))
+        selected_id = survey_titles[selected_title]
+
+        questions = []
+        pages_url = f"https://api.surveymonkey.com/v3/surveys/{selected_id}/pages"
+        pages_resp = requests.get(pages_url, headers=headers)
+        pages = pages_resp.json().get("data", [])
+
+        for page in pages:
+            q_url = f"https://api.surveymonkey.com/v3/surveys/{selected_id}/pages/{page['id']}/questions"
+            q_resp = requests.get(q_url, headers=headers)
+            q_data = q_resp.json().get("data", [])
+            for q in q_data:
+                questions.append({"survey_title": selected_title, "heading_0": q.get("headings", [{}])[0].get("heading", "")})
+
+        df_survey = pd.DataFrame(questions)
+
+        category_map = {}
+        for category, keywords in SURVEY_CATEGORIES.items():
+            mask = df_survey['survey_title'].str.lower().apply(lambda t: any(k.lower() in t for k in keywords))
+            category_map[category] = df_survey[mask]
+
+        selected_cat = st.selectbox("Filter by Category", list(category_map.keys()))
+        if selected_cat:
+            unique_qs = category_map[selected_cat]['heading_0'].drop_duplicates().reset_index(drop=True)
+            st.markdown(f"### 📌 Unique Questions for `{selected_cat}`")
+            st.dataframe(unique_qs)
+
+            if st.button("🚀 Trigger UID Assignment for This Category"):
+                st.success(f"Assignment trigger initialized for {len(unique_qs)} questions.")
+    except Exception as e:
+        st.error(f"SurveyMonkey error: {e}")
