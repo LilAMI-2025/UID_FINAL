@@ -585,7 +585,93 @@ class SessionManager:
             if key not in st.session_state:
                 st.session_state[key] = default_value
 
-class QuestionAnalyzer:
+class SurveyCategorizer:
+    """Handles survey categorization based on title keywords"""
+    
+    CATEGORY_KEYWORDS = {
+        "Application": ["application", "apply", "applying"],
+        "Pre programme": ["pre programme", "pre-programme", "pre program", "pre-program", "preparation", "preparatory"],
+        "Enrollment": ["enrollment", "enrolment", "enroll", "registration", "register"],
+        "Progress Review": ["progress", "review", "checkpoint", "mid-point", "interim", "monitoring"],
+        "Impact": ["impact", "outcome", "result", "effect", "consequence"],
+        "GROW": ["GROW"],  # Exact match for CAPS
+        "Feedback": ["feedback", "opinion", "evaluation", "rating", "comment"],
+        "Pulse": ["pulse", "check-in", "quick survey", "temperature check"]
+    }
+    
+    @staticmethod
+    def categorize_survey(title: str) -> str:
+        """Categorize survey based on title keywords"""
+        title_lower = title.lower()
+        
+        # Check for exact GROW match first (case sensitive)
+        if "GROW" in title:
+            return "GROW"
+        
+        # Check other categories
+        for category, keywords in SurveyCategorizer.CATEGORY_KEYWORDS.items():
+            if category == "GROW":  # Skip GROW in this loop as it's handled above
+                continue
+            
+            for keyword in keywords:
+                if keyword.lower() in title_lower:
+                    return category
+        
+        return "Other"
+    
+    @staticmethod
+    def analyze_survey_categories(surveys_data: List[Dict]) -> pd.DataFrame:
+        """Analyze and categorize surveys"""
+        categorized_surveys = []
+        
+        for survey in surveys_data:
+            title = survey.get("title", "")
+            survey_id = survey.get("id", "")
+            category = SurveyCategorizer.categorize_survey(title)
+            
+            categorized_surveys.append({
+                "survey_id": survey_id,
+                "survey_title": title,
+                "category": category
+            })
+        
+        return pd.DataFrame(categorized_surveys)
+    
+    @staticmethod
+    def extract_unique_questions_by_category(api: SurveyMonkeyAPI, df_categorized: pd.DataFrame) -> pd.DataFrame:
+        """Extract unique questions grouped by category"""
+        all_questions = []
+        
+        for category in df_categorized['category'].unique():
+            category_surveys = df_categorized[df_categorized['category'] == category]
+            category_questions = set()  # Use set to track unique questions
+            
+            for _, survey_row in category_surveys.iterrows():
+                survey_id = survey_row['survey_id']
+                
+                try:
+                    survey_json = api.get_survey_details(survey_id)
+                    questions = api.extract_questions(survey_json)
+                    
+                    for question in questions:
+                        # Create a unique identifier for the question
+                        question_text = question.get('heading_0', '')
+                        if question_text and question_text not in category_questions:
+                            category_questions.add(question_text)
+                            
+                            question_data = question.copy()
+                            question_data['category'] = category
+                            question_data['Final_UID'] = None
+                            question_data['configured_final_UID'] = None
+                            question_data['Change_UID'] = None
+                            
+                            all_questions.append(question_data)
+                
+                except Exception as e:
+                    logger.error(f"Failed to process survey {survey_id}: {e}")
+                    continue
+        
+        return pd.DataFrame(all_questions)
     """Handles question bank analysis and UID optimization"""
     
     @staticmethod
@@ -729,11 +815,13 @@ class PageRenderer:
         
         with col3:
             st.markdown("#### 📈 Analytics")
-            if st.button("📊 Questions per Category", use_container_width=True):
+            if st.button("📊 Final Unique QuestionBank", use_container_width=True):
+                st.session_state.page = "final_unique_bank"
+                st.rerun()
+            if st.button("📋 Questions per Category", use_container_width=True):
                 st.session_state.page = "questions_category"
                 st.rerun()
             self.ui.render_metric("Total Surveys", "Loading...", "info")
-            self.ui.render_metric("Match Rate", "Loading...", "success")
     
     def render_navigation(self):
         """Render navigation sidebar"""
@@ -747,7 +835,8 @@ class PageRenderer:
                 "📖 Question Bank": "view_question_bank",
                 "🔄 Update Bank": "update_question_bank",
                 "➕ Create Survey": "create_survey",
-                "📈 Questions Category": "questions_category"
+                "🎯 Final QuestionBank": "final_unique_bank",
+                "📋 Questions per Category": "questions_category"
             }
             
             for page_name, page_key in pages.items():
@@ -794,6 +883,9 @@ def main():
     
     elif st.session_state.page == "create_survey":
         render_create_survey_page()
+    
+    elif st.session_state.page == "final_unique_bank":
+        render_final_unique_bank_page()
     
     elif st.session_state.page == "questions_category":
         render_questions_category_page()
@@ -1627,10 +1719,10 @@ def render_create_survey_page():
         logger.error(f"Survey creation failed: {e}")
         st.error(f"❌ Error in survey creation: {e}")
 
-def render_questions_category_page():
-    """Render questions per survey category analysis page"""
+def render_final_unique_bank_page():
+    """Render final unique question bank analysis page"""
     UIManager.render_header()
-    st.markdown("## 📈 Questions per Survey Category")
+    st.markdown("## 🎯 Final Unique QuestionBank")
     st.markdown("### 🔍 UID Distribution Analysis & Optimization")
     
     try:
@@ -1661,6 +1753,438 @@ def render_questions_category_page():
         with col3:
             unique_uids = len(df_optimal['OPTIMAL_UID'].unique())
             UIManager.render_metric("Unique UIDs", str(unique_uids), "primary")
+        
+        with col4:
+            conflict_rate = (questions_with_conflicts / total_questions * 100) if total_questions > 0 else 0
+            UIManager.render_metric("Conflict Rate", f"{conflict_rate:.1f}%", "warning")
+        
+        # Tabs for different views
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📊 UID Distribution", 
+            "🎯 Optimal Assignments", 
+            "⚠️ Conflict Analysis", 
+            "📖 Optimized Question Bank"
+        ])
+        
+        with tab1:
+            render_uid_distribution_tab(df_uid_distribution, df_optimal)
+        
+        with tab2:
+            render_optimal_assignments_tab(df_optimal)
+        
+        with tab3:
+            render_conflict_analysis_tab(df_conflicts, df_optimal)
+        
+        with tab4:
+            render_optimized_bank_tab(df_optimized_bank)
+    
+    except Exception as e:
+        logger.error(f"Final unique bank analysis failed: {e}")
+        st.error(f"❌ Error in analysis: {e}")
+
+def render_questions_category_page():
+    """Render questions per survey category page"""
+    UIManager.render_header()
+    st.markdown("## 📋 Questions per Survey Category")
+    st.markdown("### 🏷️ Categorized Survey Analysis & UID Assignment")
+    
+    try:
+        token = st.secrets.get("surveymonkey", {}).get("token")
+        if not token:
+            st.error("❌ SurveyMonkey token missing in configuration.")
+            return
+        
+        api = SurveyMonkeyAPI(token)
+        
+        # Load surveys and categorize
+        with st.spinner("📊 Loading and categorizing surveys..."):
+            surveys = api.get_surveys()
+            if not surveys:
+                st.warning("⚠️ No surveys found.")
+                return
+            
+            df_categorized = SurveyCategorizer.analyze_survey_categories(surveys)
+        
+        # Display category distribution
+        st.markdown("### 📈 Survey Category Distribution")
+        
+        category_counts = df_categorized['category'].value_counts()
+        
+        # Create columns for category metrics
+        categories = list(SurveyCategorizer.CATEGORY_KEYWORDS.keys()) + ["Other"]
+        cols = st.columns(min(len(categories), 4))
+        
+        for i, category in enumerate(categories):
+            col_idx = i % len(cols)
+            with cols[col_idx]:
+                count = category_counts.get(category, 0)
+                color = "success" if count > 0 else "info"
+                UIManager.render_metric(category, str(count), color)
+        
+        # Category selection and analysis
+        st.markdown("### 🎯 Category Selection")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_categories = st.multiselect(
+                "Select categories to analyze",
+                options=category_counts.index.tolist(),
+                default=category_counts.index.tolist()[:3] if len(category_counts) > 0 else []
+            )
+        
+        with col2:
+            show_unique_only = st.checkbox("Show unique questions only", value=True)
+        
+        if not selected_categories:
+            st.info("👆 Please select at least one category to analyze.")
+            return
+        
+        # Filter categorized surveys
+        filtered_surveys = df_categorized[df_categorized['category'].isin(selected_categories)]
+        
+        # Extract questions for selected categories
+        with st.spinner("🔄 Extracting questions from selected categories..."):
+            df_category_questions = SurveyCategorizer.extract_unique_questions_by_category(api, filtered_surveys)
+        
+        if df_category_questions.empty:
+            st.warning("⚠️ No questions found in selected categories.")
+            return
+        
+        # Load reference data for UID matching
+        try:
+            with st.spinner("🔍 Loading UID reference data..."):
+                st.session_state.df_reference = DataManager.run_snowflake_query("""
+                    SELECT HEADING_0, MAX(UID) AS UID
+                    FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+                    WHERE UID IS NOT NULL
+                    GROUP BY HEADING_0
+                    LIMIT 10000
+                """)
+                
+                # Run UID matching
+                if not st.session_state.df_reference.empty:
+                    df_temp = MatchingEngine.compute_tfidf_matches(
+                        st.session_state.df_reference, 
+                        df_category_questions
+                    )
+                    df_temp = MatchingEngine.compute_semantic_matches(st.session_state.df_reference, df_temp)
+                    df_category_questions = MatchingEngine.finalize_matches(df_temp, st.session_state.df_reference)
+                
+        except Exception as e:
+            UIManager.show_warning("Snowflake connection failed. UID matching disabled.")
+            st.session_state.df_reference = None
+        
+        # Store in session state
+        st.session_state.df_category_questions = df_category_questions
+        
+        # Display results in tabs
+        tab1, tab2, tab3 = st.tabs([
+            "📊 Category Overview",
+            "📝 Questions & UID Assignment", 
+            "📋 Final Configuration"
+        ])
+        
+        with tab1:
+            render_category_overview_tab(df_categorized, df_category_questions, selected_categories)
+        
+        with tab2:
+            render_category_uid_assignment_tab(df_category_questions, show_unique_only)
+        
+        with tab3:
+            render_category_final_config_tab(df_category_questions)
+    
+    except Exception as e:
+        logger.error(f"Questions category analysis failed: {e}")
+        st.error(f"❌ Error in category analysis: {e}")
+
+def render_category_overview_tab(df_categorized, df_category_questions, selected_categories):
+    """Render category overview tab"""
+    st.markdown("### 📊 Category Analysis Overview")
+    
+    # Category breakdown
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🏷️ Survey Distribution by Category")
+        category_summary = df_categorized['category'].value_counts().reset_index()
+        category_summary.columns = ['Category', 'Survey Count']
+        
+        st.dataframe(
+            category_summary,
+            column_config={
+                "Category": st.column_config.TextColumn("Category", width="medium"),
+                "Survey Count": st.column_config.NumberColumn("Surveys", width="small")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    
+    with col2:
+        st.markdown("#### 📝 Questions by Selected Categories")
+        if not df_category_questions.empty:
+            questions_by_category = df_category_questions.groupby('category').agg({
+                'heading_0': 'count',
+                'is_choice': lambda x: (x == False).sum()  # Count main questions
+            }).reset_index()
+            questions_by_category.columns = ['Category', 'Total Items', 'Main Questions']
+            
+            st.dataframe(
+                questions_by_category,
+                column_config={
+                    "Category": st.column_config.TextColumn("Category", width="medium"),
+                    "Total Items": st.column_config.NumberColumn("Total Items", width="small"),
+                    "Main Questions": st.column_config.NumberColumn("Main Questions", width="small")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+    
+    # Detailed surveys by category
+    st.markdown("#### 🔍 Detailed Survey Breakdown")
+    
+    for category in selected_categories:
+        with st.expander(f"📂 {category} Surveys"):
+            category_surveys = df_categorized[df_categorized['category'] == category]
+            
+            if category_surveys.empty:
+                st.info(f"No surveys found in {category} category.")
+            else:
+                st.dataframe(
+                    category_surveys[['survey_id', 'survey_title']],
+                    column_config={
+                        "survey_id": st.column_config.TextColumn("Survey ID", width="medium"),
+                        "survey_title": st.column_config.TextColumn("Survey Title", width="large")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+def render_category_uid_assignment_tab(df_category_questions, show_unique_only):
+    """Render UID assignment tab for categorized questions"""
+    st.markdown("### 📝 Questions & UID Assignment")
+    
+    if df_category_questions.empty:
+        st.info("No questions available for UID assignment.")
+        return
+    
+    # Calculate matching metrics
+    matched_percentage = MetricsCalculator.calculate_matched_percentage(df_category_questions)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_questions = len(df_category_questions[df_category_questions['is_choice'] == False])
+        UIManager.render_metric("Main Questions", str(total_questions), "info")
+    
+    with col2:
+        total_choices = len(df_category_questions[df_category_questions['is_choice'] == True])
+        UIManager.render_metric("Choices", str(total_choices), "primary")
+    
+    with col3:
+        UIManager.render_metric("Match Rate", f"{matched_percentage}%", "success")
+    
+    with col4:
+        unique_categories = len(df_category_questions['category'].unique())
+        UIManager.render_metric("Categories", str(unique_categories), "warning")
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        category_filter = st.selectbox(
+            "Filter by category",
+            ["All"] + list(df_category_questions['category'].unique())
+        )
+    
+    with col2:
+        match_filter = st.selectbox(
+            "Filter by match status",
+            ["All", "Matched", "Not Matched", "High Confidence", "Low Confidence"]
+        )
+    
+    with col3:
+        search_question = st.text_input("🔍 Search questions", placeholder="Type to filter...")
+    
+    # Apply filters
+    display_df = df_category_questions.copy()
+    
+    if show_unique_only:
+        display_df = display_df[display_df['is_choice'] == False]
+    
+    if category_filter != "All":
+        display_df = display_df[display_df['category'] == category_filter]
+    
+    if search_question:
+        display_df = display_df[display_df['heading_0'].str.contains(search_question, case=False, na=False)]
+    
+    if match_filter != "All":
+        filter_map = {
+            "Matched": display_df["Final_UID"].notna(),
+            "Not Matched": display_df["Final_UID"].isna(),
+            "High Confidence": display_df.get("Match_Confidence", pd.Series()) == "✅ High",
+            "Low Confidence": display_df.get("Match_Confidence", pd.Series()) == "⚠️ Low"
+        }
+        if match_filter in filter_map:
+            display_df = display_df[filter_map[match_filter]]
+    
+    # UID options for manual assignment
+    uid_options = [None]
+    if st.session_state.df_reference is not None:
+        uid_options.extend([
+            f"{row['UID']} - {row['HEADING_0']}" 
+            for _, row in st.session_state.df_reference.iterrows()
+        ])
+    
+    # Display editable questions
+    st.markdown("#### 🎯 Question UID Assignment")
+    
+    if display_df.empty:
+        st.info("No questions match the current filters.")
+    else:
+        # Prepare columns for display
+        display_columns = [
+            "category", "heading_0", "Final_UID", "schema_type", 
+            "mandatory", "question_category", "Change_UID"
+        ]
+        
+        # Add confidence column if available
+        if "Match_Confidence" in display_df.columns:
+            display_columns.insert(3, "Match_Confidence")
+        
+        display_columns = [col for col in display_columns if col in display_df.columns]
+        
+        edited_df = st.data_editor(
+            display_df[display_columns],
+            column_config={
+                "category": st.column_config.TextColumn("Category", width="small"),
+                "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+                "Final_UID": st.column_config.TextColumn("Current UID", width="medium"),
+                "Match_Confidence": st.column_config.TextColumn("Confidence", width="small"),
+                "schema_type": st.column_config.TextColumn("Type", width="small"),
+                "mandatory": st.column_config.CheckboxColumn("Required", width="small"),
+                "question_category": st.column_config.TextColumn("Q Category", width="small"),
+                "Change_UID": st.column_config.SelectboxColumn(
+                    "Assign UID",
+                    options=uid_options,
+                    help="Select or change UID assignment"
+                )
+            },
+            disabled=["category", "heading_0", "Final_UID", "Match_Confidence", "schema_type", "question_category"],
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # Process UID changes
+        for idx, row in edited_df.iterrows():
+            if pd.notnull(row.get("Change_UID")):
+                new_uid = row["Change_UID"].split(" - ")[0] if " - " in row["Change_UID"] else None
+                if new_uid:
+                    original_idx = display_df.index[idx]
+                    st.session_state.df_category_questions.at[original_idx, "Final_UID"] = new_uid
+                    st.session_state.df_category_questions.at[original_idx, "configured_final_UID"] = new_uid
+            
+            # Update mandatory status
+            if "mandatory" in row and idx < len(display_df):
+                original_idx = display_df.index[idx]
+                st.session_state.df_category_questions.at[original_idx, "mandatory"] = row["mandatory"]
+
+def render_category_final_config_tab(df_category_questions):
+    """Render final configuration tab for categorized questions"""
+    st.markdown("### 📋 Final Category Configuration")
+    
+    if df_category_questions.empty:
+        st.info("No configuration data available.")
+        return
+    
+    # Final metrics
+    matched_percentage = MetricsCalculator.calculate_matched_percentage(df_category_questions)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        UIManager.render_metric("Final Match Rate", f"{matched_percentage}%", "success")
+    
+    with col2:
+        total_items = len(df_category_questions)
+        UIManager.render_metric("Total Items", str(total_items), "info")
+    
+    with col3:
+        configured_items = len(df_category_questions[df_category_questions["Final_UID"].notna()])
+        UIManager.render_metric("Configured Items", str(configured_items), "primary")
+    
+    with col4:
+        categories_count = len(df_category_questions['category'].unique())
+        UIManager.render_metric("Categories", str(categories_count), "warning")
+    
+    # Configuration preview by category
+    st.markdown("#### 📊 Configuration by Category")
+    
+    for category in df_category_questions['category'].unique():
+        with st.expander(f"📂 {category} Configuration"):
+            category_data = df_category_questions[df_category_questions['category'] == category]
+            
+            # Show summary
+            total_in_category = len(category_data)
+            configured_in_category = len(category_data[category_data["Final_UID"].notna()])
+            main_questions = len(category_data[category_data["is_choice"] == False])
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Items", total_in_category)
+            with col2:
+                st.metric("Configured", configured_in_category)
+            with col3:
+                st.metric("Main Questions", main_questions)
+            
+            # Show detailed data
+            display_columns = [
+                "heading_0", "Final_UID", "is_choice", "mandatory", 
+                "schema_type", "question_category"
+            ]
+            display_columns = [col for col in display_columns if col in category_data.columns]
+            
+            st.dataframe(
+                category_data[display_columns],
+                column_config={
+                    "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+                    "Final_UID": st.column_config.TextColumn("UID", width="medium"),
+                    "is_choice": st.column_config.CheckboxColumn("Choice", width="small"),
+                    "mandatory": st.column_config.CheckboxColumn("Required", width="small"),
+                    "schema_type": st.column_config.TextColumn("Type", width="small"),
+                    "question_category": st.column_config.TextColumn("Category", width="small")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+    
+    # Export options
+    st.markdown("#### 📤 Export Options")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Prepare export data
+        export_columns = [
+            "category", "heading_0", "Final_UID", "is_choice", "mandatory",
+            "schema_type", "question_category", "position"
+        ]
+        export_columns = [col for col in export_columns if col in df_category_questions.columns]
+        export_df = df_category_questions[export_columns].copy()
+        
+        csv_data = export_df.to_csv(index=False)
+        st.download_button(
+            "📥 Download Category Configuration",
+            csv_data,
+            f"category_questions_config_{uuid4().hex[:8]}.csv",
+            "text/csv",
+            use_container_width=True
+        )
+    
+    with col2:
+        if st.button("🚀 Deploy Configuration", use_container_width=True):
+            st.info("🔧 This feature will deploy the category-based question configuration to production.")
+
+def render_questions_category_page():primary")
         
         with col4:
             conflict_rate = (questions_with_conflicts / total_questions * 100) if total_questions > 0 else 0
