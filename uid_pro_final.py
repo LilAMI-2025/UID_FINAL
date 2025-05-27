@@ -277,13 +277,18 @@ def prepare_matching_data():
 def get_cached_reference_questions():
     try:
         engine = get_snowflake_engine()
-        # Replace YOUR_TABLE with your actual Snowflake table name
-        query = "SELECT HEADING_0, UID, TITLE FROM YOUR_TABLE WHERE HEADING_0 IS NOT NULL"
+        table_name = st.secrets.get("snowflake", {}).get("table", "YOUR_SNOWFLAKE_TABLE")
+        if table_name == "YOUR_SNOWFLAKE_TABLE":
+            raise ValueError("Snowflake table name not configured. Set 'table' in st.secrets['snowflake'].")
+        query = f"SELECT HEADING_0, UID, TITLE FROM {table_name} WHERE HEADING_0 IS NOT NULL"
         df = pd.read_sql(query, engine)
         return df
     except Exception as e:
         logger.error(f"Failed to fetch reference questions: {e}")
-        st.error(f"❌ Failed to fetch reference data: {str(e)}")
+        error_msg = f"❌ Failed to fetch reference data: {str(e)}"
+        if "Object" in str(e) and "does not exist or not authorized" in str(e):
+            error_msg += "\nPlease ensure the Snowflake table exists and your user has SELECT permissions. Check 'table' in st.secrets['snowflake']."
+        st.error(error_msg)
         return pd.DataFrame()
 
 def perform_semantic_matching(surveymonkey_questions, df_reference):
@@ -588,21 +593,41 @@ def view_surveys():
             if not surveys:
                 st.warning("⚠️ No surveys found or API request failed")
                 return
-            for survey in surveys:
-                with st.expander(f"Survey: {survey.get('title', 'Untitled Survey')}"):
-                    st.write(f"ID: {survey.get('id', 'N/A')}")
+            
+            # Create dropdown options: survey_id - survey_title
+            survey_options = [
+                f"{survey.get('id', 'N/A')} - {survey.get('title', 'Untitled Survey')}"
+                for survey in surveys
+            ]
+            selected_survey = st.selectbox("Select Survey", survey_options)
+            
+            if selected_survey:
+                # Extract survey_id from selection
+                selected_id = selected_survey.split(" - ")[0]
+                survey = next((s for s in surveys if s.get('id') == selected_id), None)
+                if survey:
+                    # Display survey metadata
+                    st.write(f"**Survey ID:** {survey.get('id', 'N/A')}")
+                    st.write(f"**Title:** {survey.get('title', 'Untitled Survey')}")
                     question_count = survey.get('question_count', 0)
-                    st.write(f"Questions: {question_count if question_count > 0 else 'No questions found'}")
+                    st.write(f"**Questions:** {question_count if question_count > 0 else 'No questions found'}")
                     if question_count == 0:
                         st.warning("⚠️ This survey has no questions")
-                    if st.button(f"View Details", key=survey['id']):
+                    
+                    # Load and display questions in a table
+                    if st.button("View Survey Details"):
                         details = get_survey_details(survey['id'], token)
                         questions = extract_questions_from_surveymonkey(details)
                         if not questions:
                             st.warning("⚠️ No questions extracted from this survey")
-                        st.session_state.questions = questions
-                        st.session_state.page = "configure_survey"
-                        st.rerun()
+                        else:
+                            df_questions = pd.DataFrame(questions)
+                            df_questions['choices'] = df_questions['choices'].apply(lambda x: ', '.join(x) if x else 'N/A')
+                            st.markdown("### Survey Questions")
+                            st.dataframe(df_questions[['question_id', 'question_text', 'choices', 'survey_title']])
+                            st.session_state.questions = questions
+                            st.session_state.page = "configure_survey"
+                            st.rerun()
         else:
             st.warning("⚠️ No SurveyMonkey token provided")
     except Exception as e:
@@ -754,7 +779,7 @@ def build_question_bank():
                 st.cache_data.clear()
                 st.rerun()
         else:
-            st.warning("⚠️ No reference questions loaded")
+            st.warning("⚠️ No reference questions loaded. Check Snowflake table configuration.")
     except Exception as e:
         st.error(f"❌ Failed to build question bank: {str(e)}")
 
@@ -763,13 +788,14 @@ def optimized_question_bank():
     try:
         df_reference = get_cached_reference_questions()
         if not df_reference.empty:
+            st.success(f"✅ Loaded {len(df_reference):,} reference questions")
             if st.button("🚀 Build Optimized 1:1 Question Bank"):
                 with st.spinner("Building optimized question bank..."):
                     optimized_df = build_optimized_1to1_question_bank(df_reference)
                     if not optimized_df.empty:
                         st.success(f"✅ Optimization complete!")
         else:
-            st.warning("⚠️ No reference questions loaded")
+            st.warning("⚠️ No reference questions loaded. Check Snowflake table configuration.")
     except Exception as e:
         st.error(f"❌ Failed to build optimized question bank: {str(e)}")
 
