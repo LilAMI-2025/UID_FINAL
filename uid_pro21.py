@@ -2084,4 +2084,3 @@ def render_conflict_analysis_tab(df_conflicts, df_optimal):
 
 
 
-
