@@ -15,6 +15,16 @@ from collections import defaultdict, Counter
 import hashlib
 
 # Setup
+
+# Page Selector
+st.sidebar.title("Navigation")
+pages = [
+    "Home",
+    "UID Dominance & Conflict",
+    "Categorized Question Viewer"
+]
+selected_page = st.sidebar.selectbox("Go to", pages)
+
 st.set_page_config(
     page_title="UID Matcher Pro", 
     layout="wide",
