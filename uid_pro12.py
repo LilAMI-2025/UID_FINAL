@@ -729,7 +729,7 @@ def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
     for phrase, replacement in synonym_map.items():
         text = text.replace(phrase, replacement)
     
-   return ' '.join(w for w in text.split() if w not in ENGLISH_STOP_WORDS)
+return ' '.join(w for w in text.split() if w not in ENGLISH_STOP_WORDS)
 
 def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_MAP):
     """Compute TF-IDF matches with enhanced normalization"""
@@ -1732,6 +1732,4 @@ elif st.session_state.page == "view_surveys":
         st.error(f"❌ Error fetching surveys: {e}")
 
 else:
-    st.markdown('<div class="warning-card">⚠️ Page not found. Please use the navigation menu.</div>', unsafe_allow_html=True)i
-
-
+    st.markdown('<div class="warning-card">⚠️ Page not found. Please use the navigation menu.</div>', unsafe_allow_html=True)
