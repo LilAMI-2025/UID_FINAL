@@ -1130,6 +1130,52 @@ def categorize_survey_from_question(question_text):
     
     return "Other"
 
+# Add a helper function to check table schema
+def check_snowflake_table_schema():
+    """Check the available columns in the Snowflake table"""
+    try:
+        with get_snowflake_engine().connect() as conn:
+            schema_query = """
+                SELECT COLUMN_NAME, DATA_TYPE 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_NAME = 'SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' 
+                AND TABLE_SCHEMA = 'DBT_SURVEY_MONKEY'
+                ORDER BY ORDINAL_POSITION
+            """
+            schema_df = pd.read_sql(text(schema_query), conn)
+            return schema_df
+    except Exception as e:
+        logger.error(f"Could not check table schema: {e}")
+        return pd.DataFrame()
+
+# Enhanced survey categorization that works without SURVEY_TITLE
+def categorize_survey_from_question(question_text):
+    """
+    Fallback categorization based on question content when SURVEY_TITLE is not available
+    """
+    if not question_text or pd.isna(question_text):
+        return "Unknown"
+    
+    text_lower = str(question_text).lower()
+    
+    # Check for category indicators in question text
+    category_indicators = {
+        'Application': ['apply', 'application', 'register', 'signup', 'join'],
+        'Pre programme': ['before', 'pre-', 'baseline', 'preparation', 'ready'],
+        'Enrollment': ['welcome', 'start', 'begin', 'onboard', 'enroll'],
+        'Progress Review': ['progress', 'review', 'milestone', 'check', 'assessment'],
+        'Impact': ['impact', 'outcome', 'result', 'after', 'completion', 'effect'],
+        'GROW': ['GROW', 'goal', 'reality', 'options', 'will'],
+        'Feedback': ['feedback', 'satisfaction', 'rating', 'opinion', 'evaluate'],
+        'Pulse': ['pulse', 'quick', 'brief', 'temperature', 'snapshot']
+    }
+    
+    for category, keywords in category_indicators.items():
+        if any(keyword.lower() in text_lower for keyword in keywords):
+            return category
+    
+    return "Other"
+
 @st.cache_data
 def get_all_reference_questions():
     """Cached function to get all reference questions"""
