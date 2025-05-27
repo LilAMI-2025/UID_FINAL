@@ -1286,9 +1286,9 @@ def run_snowflake_reference_query_all():
     
     while True:
         query = """
-            SELECT HEADING_0, UID, SURVEY_TITLE
+            SELECT HEADING_0, UID
             FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-            WHERE UID IS NOT NULL
+            WHERE UID IS NOT NULL AND HEADING_0 IS NOT NULL
             ORDER BY CAST(UID AS INTEGER) ASC
             LIMIT :limit OFFSET :offset
         """
@@ -1488,7 +1488,7 @@ def categorize_survey(survey_title):
     return "Other"
 
 def create_unique_questions_bank(df_reference):
-    """Enhanced unique questions bank with survey categorization and governance"""
+    """Enhanced unique questions bank - Snowflake data only has heading_0 and UID"""
     if df_reference.empty:
         return pd.DataFrame()
     
@@ -1502,7 +1502,7 @@ def create_unique_questions_bank(df_reference):
         if pd.isna(uid):
             continue
             
-        uid_questions = group['heading_0'].tolist()
+        uid_questions = group['heading_0'].dropna().tolist()
         
         # Calculate quality scores for all questions
         quality_scores = [calculate_question_quality_score(q) for q in uid_questions]
@@ -1510,21 +1510,8 @@ def create_unique_questions_bank(df_reference):
         best_question = uid_questions[best_idx]
         best_quality = quality_scores[best_idx]
         
-        # Get survey titles for categorization
-        survey_titles = group.get('survey_title', pd.Series()).dropna().unique()
-        
-        # Determine category from survey titles
-        categories = []
-        for title in survey_titles:
-            category = categorize_survey(title)
-            if category not in categories:
-                categories.append(category)
-        
-        # If multiple categories, take the most frequent
-        if categories:
-            primary_category = categories[0] if len(categories) == 1 else "Mixed"
-        else:
-            primary_category = "Unknown"
+        # Since Snowflake doesn't have survey_title, we'll categorize based on question content
+        primary_category = "Database" # Default category for Snowflake data
         
         if best_question:
             # Standardize the best question
@@ -1538,7 +1525,7 @@ def create_unique_questions_bank(df_reference):
                 'question_length': len(str(best_question)),
                 'question_words': len(str(best_question).split()),
                 'survey_category': primary_category,
-                'survey_titles': ', '.join(survey_titles) if len(survey_titles) > 0 else 'Unknown',
+                'data_source': 'Snowflake',
                 'quality_score': best_quality,
                 'governance_compliant': len(uid_questions) <= UID_GOVERNANCE['max_variations_per_uid'],
                 'all_variants': uid_questions,
