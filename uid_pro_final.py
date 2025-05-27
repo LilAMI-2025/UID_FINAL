@@ -233,10 +233,14 @@ def extract_questions_from_surveymonkey(survey_data):
                 if 'headings' in question and question['headings']:
                     question_text = question['headings'][0].get('heading', '')
                     if question_text.strip():
+                        choices = []
+                        if 'answers' in question and 'choices' in question['answers']:
+                            choices = [choice.get('text', '') for choice in question['answers']['choices'] if choice.get('text')]
                         questions.append({
                             'question_id': question.get('id', ''),
                             'question_text': question_text,
-                            'survey_title': survey_data.get('title', '')
+                            'survey_title': survey_data.get('title', ''),
+                            'choices': choices
                         })
         logger.info(f"Extracted {len(questions)} questions from survey")
         return questions
@@ -273,6 +277,7 @@ def prepare_matching_data():
 def get_cached_reference_questions():
     try:
         engine = get_snowflake_engine()
+        # Replace YOUR_TABLE with your actual Snowflake table name
         query = "SELECT HEADING_0, UID, TITLE FROM YOUR_TABLE WHERE HEADING_0 IS NOT NULL"
         df = pd.read_sql(query, engine)
         return df
@@ -621,7 +626,7 @@ def configure_survey():
     if 'questions' in st.session_state and st.session_state.questions:
         df_target = pd.DataFrame(st.session_state.questions)
         st.markdown("### 📋 Survey Questions")
-        st.dataframe(df_target[['survey_title', 'question_text']])
+        st.dataframe(df_target[['survey_title', 'question_text', 'choices']] if 'choices' in df_target.columns else df_target[['survey_title', 'question_text']])
         
         if sf_status:
             st.markdown("### 🔄 UID Assignment Process")
@@ -723,6 +728,8 @@ def configure_survey():
                                 st.write(f"**SurveyMonkey Question:** {row['question_text']}")
                                 st.write(f"**Matched Snowflake Question:** {row['matched_heading_0']}")
                                 st.write(f"**Match Score:** {row['match_score']:.3f}")
+                                if 'choices' in row and row['choices']:
+                                    st.write(f"**Choices:** {', '.join(row['choices'])}")
                                 if row.get('conflict_resolved', False):
                                     st.write(f"**UID Authority:** {row['uid_authority']} records{authority_info}")
                                     st.info("🔥 This question had multiple competing UIDs. Assigned to highest-count UID.")
@@ -795,77 +802,3 @@ elif st.session_state.page == "Matching Dashboard":
     matching_dashboard()
 elif st.session_state.page == "Settings":
     settings()
-```
-</xai_checkpoint>
-
-### Step 5: Testing Instructions
-1. **Setup**:
-   - Install dependencies: `pip install streamlit pandas requests sqlalchemy snowflake-sqlalchemy sentence-transformers numpy scikit-learn`.
-   - Configure `st.secrets`:
-     ```toml
-     [snowflake]
-     user = "your_snowflake_user"
-     password = "your_snowflake_password"
-     account = "your_snowflake_account"
-     database = "your_database"
-     schema = your_schema"
-     warehouse = "your_warehouse"
-     role = your_role"
-
-     [surveymonkey]
-     token = your_surveymonkey_token"
-     ```
-   - Update `get_qualified_reference_questions`:
-     ```python
-     query = "SELECT HEADING_0, UID, TITLE FROM YOUR_TABLE WHERE HEADING_0 IS NOT NULL"
-     ```
-
-2. **Run the Script**:
-   - Save as `uid_matcher_pro.py`.
-   - Execute: `streamlit run uid_matcher_pro.py`.
-   - Access: `http://localhost:8501`.
-
-3. **Test Workflow**:
-   - **View Surveys**:
-     - Check if question counts are displayed correctly (not "N/A").
-     - Expand surveys and click "View Details" to load questions.
-   - **Configure SurveyMonkey**:
-     - Verify that questions appear in the table.
-     - Run matching and check results.
-   - **Edge Cases**:
-     - Test empty surveys.
-     - Test with an invalid token.
-     - Test large surveys (>100 questions).
-   - **Logs**:
-     - Check logs (terminal or Streamlit Cloud) for API responses and errors.
-     - Look for `Extracted {n} questions from surveys` and survey response structure.
-
-5. **Verify Fixes**:
-   - **N/A Issue**: Confirm question counts are accurate or show "No questions found".
-   - **Previous Fixes**: Ensure `build_optimized_1to1`, `run_uid_match`, etc., work without errors.
-   - **UI**: Verify CSS and navigation are consistent.
-   - **Secrets**: Ensure the SurveyMonkey token is auto-filled from secrets.
-
-### Step 6: Troubleshooting
-1. **Persistent "N/A" Issue**:
-   - **Check Logs**: Open the terminal or Streamlit Cloud logs. Search for `SurveyMonkey surveys response` and `SurveyMonkey details`. Check if `question_count` exists or if pages/questions are empty.
-   - **API Token**: Verify the token has `surveys_read` scope. Test the API manually:
-     ```python
-     import requests
-     token = "your_token"
-     headers = {"Authorization": f"Bearer {token}"}
-     response = requests.get("https://api.surveymonkey.com/v3/surveys", headers=headers)
-     print(response.json())
-     ```
-   - **Survey Status**: Check if surveys are drafts or empty in SurveyMonkey’s dashboard.
-
-2. **No Questions Extracted**:
-   - Ensure surveys have questions in SurveyMonkey.
-   - Check `extract_questions_from_survey` monkey logs for warnings about missing pages or headings.
-
-3. **Cache Issues**:
-   - Clear Streamlit cache: `streamlit cache clear` or click "Clear Cache" in the Streamlit UI (hamburger menu).
-   - Temporarily remove `@st.cache_data` from `get_surveys` for debugging:
-     ```python
-     def get_surveys(token):
-
