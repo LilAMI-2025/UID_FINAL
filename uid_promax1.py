@@ -656,6 +656,9 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
         return []
     
     try:
+        # Use session state threshold if available, otherwise use default
+        threshold = st.session_state.get('semantic_threshold', SEMANTIC_THRESHOLD)
+        
         if use_optimized_reference:
             optimized_ref = st.session_state.get('primary_matching_reference')
             if optimized_ref is None or optimized_ref.empty:
@@ -692,7 +695,7 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
             
             result = sm_question.copy()
             
-            if best_score >= SEMANTIC_THRESHOLD:
+            if best_score >= threshold:  # Use session state threshold
                 matched_row = optimized_ref.iloc[best_match_idx]
                 
                 if use_optimized_reference:
@@ -1389,11 +1392,10 @@ def settings():
     )
     
     if st.button("💾 Save Settings"):
-        # Update global settings
-        global SEMANTIC_THRESHOLD, UID_GOVERNANCE
-        SEMANTIC_THRESHOLD = semantic_threshold
-        UID_GOVERNANCE['conflict_resolution_threshold'] = conflict_threshold
-        UID_GOVERNANCE['high_conflict_threshold'] = high_conflict_threshold
+        # Save settings to session state instead of global variables
+        st.session_state.semantic_threshold = semantic_threshold
+        st.session_state.conflict_resolution_threshold = conflict_threshold
+        st.session_state.high_conflict_threshold = high_conflict_threshold
         
         st.success("✅ Settings saved successfully!")
     
