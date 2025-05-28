@@ -82,15 +82,6 @@ def monitor_performance(func):
         return result
     return wrapper
 
-# Sidebar navigation
-st.sidebar.title("🧠 UID Matcher Pro")
-page = st.sidebar.selectbox(
-    "Navigate",
-    ["Home Dashboard", "View Surveys", "Create Survey", "Configure Survey",
-     "Build Question Bank", "Optimized 1:1 Question Bank", "Matching Dashboard", "Settings"]
-)
-st.session_state.page = page
-
 # Initialize session state
 if 'snowflake_engine' not in st.session_state:
     st.session_state.snowflake_engine = None
@@ -100,6 +91,8 @@ if 'primary_matching_reference' not in st.session_state:
     st.session_state.primary_matching_reference = None
 if 'last_optimization_time' not in st.session_state:
     st.session_state.last_optimization_time = None
+if 'optimization_attempted' not in st.session_state:
+    st.session_state.optimization_attempted = False
 
 # Utility Functions
 def enhanced_normalize(text):
@@ -207,11 +200,9 @@ def get_all_reference_questions_from_snowflake():
                 
         except Exception as e:
             logger.error(f"Snowflake reference query failed at offset {offset}: {e}")
-            if "250001" in str(e):
-                st.warning("🔒 Cannot fetch Snowflake data: User account is locked.")
             error_msg = f"❌ Failed to fetch reference data: {str(e)}"
             if "Object does not exist" in str(e):
-                error_msg += "\nEnsure the table 'AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' exists and is accessible."
+                error_msg += "\nEnsure the table 'AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' exists."
             if "not authorized" in str(e).lower():
                 error_msg += "\nCheck permissions for user 'ami_tableau' with role 'TABLEAU'."
             st.error(error_msg)
@@ -219,7 +210,6 @@ def get_all_reference_questions_from_snowflake():
     
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
-        # Ensure proper column naming
         final_df.columns = ['HEADING_0', 'UID', 'TITLE']
         logger.info(f"Total reference questions fetched from Snowflake: {len(final_df)}")
         return final_df
@@ -246,11 +236,30 @@ def run_snowflake_target_query():
         return result
     except Exception as e:
         logger.error(f"Snowflake target query failed: {e}")
-        error_msg = f"❌ Failed to fetch target data: {str(e)}"
-        if "Object does not exist" in str(e):
-            error_msg += "\nEnsure the table 'AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' exists."
-        st.error(error_msg)
+        st.error(f"❌ Failed to fetch target data: {str(e)}")
         return pd.DataFrame()
+
+# Optimization Auto-Build
+def ensure_optimized_reference():
+    if st.session_state.get('optimization_attempted', False):
+        return
+    try:
+        opt_ref = get_optimized_matching_reference()
+        if opt_ref.empty:
+            with st.spinner("Building optimized 1:1 question bank..."):
+                df_reference = get_all_reference_questions_from_snowflake()
+                if not df_reference.empty:
+                    optimized_df = build_optimized_1to1_question_bank(df_reference)
+                    if not optimized_df.empty:
+                        logger.info("Auto-built optimized 1:1 question bank")
+                    else:
+                        logger.warning("Failed to build optimized question bank")
+                else:
+                    logger.warning("No Snowflake reference data for optimization")
+        st.session_state.optimization_attempted = True
+    except Exception as e:
+        logger.error(f"Auto-build optimization failed: {e}")
+        st.session_state.optimization_attempted = True
 
 # SurveyMonkey Functions
 @st.cache_data(ttl=300)
@@ -532,7 +541,6 @@ def get_optimized_matching_reference():
             return st.session_state.primary_matching_reference
         else:
             logger.warning("Optimized 1:1 question bank not built")
-            st.warning("⚠️ Optimized 1:1 question bank not built yet")
             return pd.DataFrame()
     except Exception as e:
         logger.error(f"Failed to get optimized matching reference: {e}")
@@ -686,7 +694,6 @@ def view_surveys():
                 st.warning("⚠️ No surveys found or API request failed")
                 return
             
-            # Create dropdown options: survey_id - survey_title
             survey_options = [
                 f"{survey.get('id', 'N/A')} - {survey.get('title', 'Untitled Survey')}"
                 for survey in surveys
@@ -694,11 +701,9 @@ def view_surveys():
             selected_survey = st.selectbox("Select Survey", survey_options)
             
             if selected_survey:
-                # Extract survey_id from selection
                 selected_id = selected_survey.split(" - ")[0]
                 survey = next((s for s in surveys if s.get('id') == selected_id), None)
                 if survey:
-                    # Display survey metadata
                     st.write(f"**Survey ID:** {survey.get('id', 'N/A')}")
                     st.write(f"**Title:** {survey.get('title', 'Untitled Survey')}")
                     question_count = survey.get('question_count', 0)
@@ -706,7 +711,6 @@ def view_surveys():
                     if question_count == 0:
                         st.warning("⚠️ This survey has no questions")
                     
-                    # Load and display questions in a table
                     if st.button("View Survey Details"):
                         details = get_survey_details(survey['id'], token)
                         questions = extract_questions_from_surveymonkey(details)
@@ -746,6 +750,9 @@ def configure_survey():
         logger.error(f"Snowflake connection failed: {e}")
         st.warning("⚠️ Snowflake connection not established")
 
+    # Ensure optimization is built
+    ensure_optimized_reference()
+
     if 'questions' in st.session_state and st.session_state.questions:
         df_target = pd.DataFrame(st.session_state.questions)
         st.markdown("### 📋 Survey Questions")
@@ -764,10 +771,11 @@ def configure_survey():
             elif perf_stats['unique_questions_loaded'] > 0:
                 st.success("✅ Standard optimization ready! Consider building 1:1 optimization for best performance.")
             else:
-                st.warning("⚠️ Question Bank not optimized! Matching will be slower.")
-                if st.button("🏗️ Build Question Bank for Better Performance"):
-                    st.session_state.page = "build_question_bank"
+                st.error("❌ Question Bank not optimized! Matching will be slower.")
+                if st.button("🏗️ Build Question Bank Now"):
+                    st.session_state.page = "optimized_question_bank"
                     st.rerun()
+                return
             
             st.markdown("### ⚡ Performance Comparison")
             col1, col2, col3 = st.columns(3)
@@ -924,6 +932,9 @@ def matching_dashboard():
 def settings():
     st.title("⚙️ Settings")
     st.info("Settings page not implemented in this version.")
+
+# Trigger optimization on startup
+ensure_optimized_reference()
 
 # Page Routing
 if st.session_state.page == "Home Dashboard":
