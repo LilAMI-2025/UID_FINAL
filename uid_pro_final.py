@@ -169,6 +169,83 @@ def get_snowflake_engine():
             )
         raise
 
+# Snowflake Query Functions
+@st.cache_data(ttl=600)  # Cache for 10 minutes
+def get_all_reference_questions_from_snowflake():
+    """
+    Fetch ALL reference questions from Snowflake with pagination
+    Returns: DataFrame with HEADING_0, UID, TITLE columns
+    """
+    all_data = []
+    limit = 10000
+    offset = 0
+    
+    while True:
+        query = """
+            SELECT HEADING_0, UID, TITLE
+            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+            WHERE UID IS NOT NULL
+            ORDER BY CAST(UID AS INTEGER) ASC
+            LIMIT :limit OFFSET :offset
+        """
+        try:
+            with get_snowflake_engine().connect() as conn:
+                result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
+            
+            if result.empty:
+                break
+                
+            all_data.append(result)
+            offset += limit
+            
+            logger.info(f"Fetched {len(result)} rows, total so far: {sum(len(df) for df in all_data)}")
+            
+            if len(result) < limit:
+                break
+                
+        except Exception as e:
+            logger.error(f"Snowflake reference query failed at offset {offset}: {e}")
+            if "250001" in str(e):
+                st.warning("🔒 Cannot fetch Snowflake data: User account is locked.")
+            error_msg = f"❌ Failed to fetch reference data: {str(e)}"
+            if "Object does not exist" in str(e):
+                error_msg += "\nEnsure the table 'AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' exists."
+            st.error(error_msg)
+            return pd.DataFrame()
+    
+    if all_data:
+        final_df = pd.concat(all_data, ignore_index=True)
+        # Ensure proper column naming
+        final_df.columns = ['HEADING_0', 'UID', 'TITLE']
+        logger.info(f"Total reference questions fetched from Snowflake: {len(final_df)}")
+        return final_df
+    else:
+        logger.warning("No reference data fetched from Snowflake")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=600)  # Cache for 10 minutes
+def run_snowflake_target_query():
+    """
+    Get target questions without UIDs from Snowflake
+    """
+    query = """
+        SELECT DISTINCT HEADING_0, TITLE
+        FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+        WHERE UID IS NULL AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
+        ORDER BY HEADING_0
+    """
+    try:
+        with get_snowflake_engine().connect() as conn:
+            result = pd.read_sql(text(query), conn)
+        return result
+    except Exception as e:
+        logger.error(f"Snowflake target query failed: {e}")
+        error_msg = f"❌ Failed to fetch target data: {str(e)}"
+        if "Object does not exist" in str(e):
+            error_msg += "\nEnsure the table 'AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' exists."
+        st.error(error_msg)
+        return pd.DataFrame()
+
 # SurveyMonkey Functions
 @st.cache_data(ttl=300)
 def get_surveys(token):
@@ -260,36 +337,19 @@ def load_sentence_transformer():
 
 def prepare_matching_data():
     try:
-        ref_questions = get_cached_reference_questions()
-        if ref_questions.empty:
+        try:
+            ref_questions = get_all_reference_questions_from_snowflake()
+            if ref_questions.empty:
+                return [], None, {}
+            model = load_sentence_transformer()
+            ref_texts = ref_questions['HEADING_0'].tolist()
+            ref_embeddings = model.encode(text, convert_to_tensor=True)
+            uid_lookup = {i: uid for i, uid in enumerate(ref_questions['UID'])}
+            return ref_texts, ref_embeddings, uid_lookup
+    except Exception as e:
+            logger.error(f"Error preparing matching data: {e}")
+            st.error(f"❌ Failed to prepare matching data: {str(e)}")
             return [], None, {}
-        model = load_sentence_transformer()
-        ref_texts = ref_questions['heading_0'].tolist()
-        ref_embeddings = model.encode(ref_texts, convert_to_tensor=True)
-        uid_lookup = {i: uid for i, uid in enumerate(ref_questions['uid'])}
-        return ref_texts, ref_embeddings, uid_lookup
-    except Exception as e:
-        logger.error(f"Error preparing matching data: {e}")
-        st.error(f"❌ Failed to prepare matching data: {str(e)}")
-        return [], None, {}
-
-@st.cache_data(ttl=CACHE_DURATION)
-def get_cached_reference_questions():
-    try:
-        engine = get_snowflake_engine()
-        table_name = st.secrets.get("snowflake", {}).get("table", "YOUR_SNOWFLAKE_TABLE")
-        if table_name == "YOUR_SNOWFLAKE_TABLE":
-            st.warning("⚠️ Snowflake table name not configured in st.secrets['snowflake']['table']. Using placeholder table 'YOUR_SNOWFLAKE_TABLE', which may fail. Please update secrets.")
-        query = f"SELECT HEADING_0, UID, TITLE FROM {table_name} WHERE HEADING_0 IS NOT NULL"
-        df = pd.read_sql(query, engine)
-        return df
-    except Exception as e:
-        logger.error(f"Failed to fetch reference questions: {e}")
-        error_msg = f"❌ Failed to fetch reference data: {str(e)}"
-        if "Object" in str(e) and "does not exist or not authorized" in str(e):
-            error_msg += "\nPlease ensure the Snowflake table exists and your user has SELECT permissions. Check 'table' in st.secrets['snowflake']."
-        st.error(error_msg)
-        return pd.DataFrame()
 
 def perform_semantic_matching(surveymonkey_questions, df_reference):
     if not surveymonkey_questions or df_reference.empty:
@@ -298,7 +358,7 @@ def perform_semantic_matching(surveymonkey_questions, df_reference):
     try:
         model = load_sentence_transformer()
         sm_texts = [q['question_text'] for q in surveymonkey_questions]
-        ref_texts = df_reference['heading_0'].tolist()
+        ref_texts = df_reference['HEADING_0'].tolist()
         sm_embeddings = model.encode(sm_texts, convert_to_tensor=True)
         ref_embeddings = model.encode(ref_texts, convert_to_tensor=True)
         similarities = util.cos_sim(sm_embeddings, ref_embeddings)
@@ -308,8 +368,8 @@ def perform_semantic_matching(surveymonkey_questions, df_reference):
             best_score = similarities[i][best_match_idx].item()
             result = sm_question.copy()
             if best_score >= SEMANTIC_THRESHOLD:
-                result['matched_uid'] = df_reference.iloc[best_match_idx]['uid']
-                result['matched_heading_0'] = df_reference.iloc[best_match_idx]['heading_0']
+                result['matched_uid'] = df_reference.iloc[best_match_idx]['matched_uid']
+                result['matched_heading_0'] = df_reference.iloc[best_match_idx]['HEADING_0']
                 result['match_score'] = best_score
                 result['match_confidence'] = "High" if best_score >= 0.8 else "Medium"
             else:
@@ -340,7 +400,7 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
             return fast_semantic_matching(surveymonkey_questions, use_cached_data=True)
         model = load_sentence_transformer()
         sm_texts = [q['question_text'] for q in surveymonkey_questions]
-        logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions against {len(ref_texts)} optimized references")
+        logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions against {len(ref_texts)} optimized reference")
         sm_embeddings = model.encode(sm_texts, convert_to_tensor=True)
         ref_embeddings = model.encode(ref_texts, convert_to_tensor=True)
         similarities = util.cos_sim(sm_embeddings, ref_embeddings)
@@ -375,7 +435,9 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
         return fast_semantic_matching(surveymonkey_questions, use_cached_data=True)
 
 def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
+    """
     if not surveymonkey_questions:
+        """
         st.warning("⚠️ No SurveyMonkey questions provided for matching")
         return []
     try:
@@ -383,11 +445,13 @@ def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
             ref_questions, ref_embeddings, uid_lookup = prepare_matching_data()
             if ref_embeddings is None:
                 st.warning("⚠️ Cached data not available, falling back to slow matching")
-                return perform_semantic_matching(surveymonkey_questions, get_cached_reference_questions())
-        else:
-            return perform_semantic_matching(surveymonkey_questions, get_cached_reference_questions())
+                return perform_semantic_matching(surveymonkey_questions, get_all_reference_questions_from_snowflake())
+            
+else:
+            ref_questions = get_all_reference_questions_from_snowflake()
+            return perform_semantic_matching(surveymonkey_questions, ref_questions)
         model = load_sentence_transformer()
-        sm_texts = [q['question_text'] for q in surveymonkey_questions]
+            sm_texts = [q['question_text'] for q in surveymonkey_questions]
         logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions")
         sm_embeddings = model.encode(sm_texts, convert_to_tensor=True)
         logger.info("Calculating similarities using pre-computed embeddings")
@@ -411,28 +475,30 @@ def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
                 result['match_confidence'] = "Low"
             matched_results.append(result)
         logger.info(f"Fast semantic matching completed for {len(matched_results)} questions")
-        return matched_results
+            return matched_results
     except Exception as e:
         logger.error(f"Fast semantic matching failed: {e}")
         st.error(f"❌ Fast matching failed: {str(e)}. Falling back to standard matching.")
-        return perform_semantic_matching(surveymonkey_questions, get_cached_reference_questions())
+        return perform_semantic_matching(surveymonkey_questions, get_all_reference_questions_from_snowflake())
 
 def batch_process_matching(surveymonkey_questions, batch_size=100):
-    if not surveymonkey_questions:
+    """ if not surveymonkey_questions:
+    """
         st.warning("⚠️ No SurveyMonkey questions provided for batch processing")
         return []
     try:
         total_questions = len(surveymonkey_questions)
         if total_questions <= batch_size:
-            return fast_semantic_matching(surveymonkey_questions)
+            return fast_semantic_matching(surveysmonkey_questions)
         logger.info(f"Processing {total_questions} questions in batches of {batch_size}")
-        all_results = []
-        for i in range(0, total_questions, batch_size):
-            batch = surveymonkey_questions[i:i + batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}")
-            with st.spinner(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}..."):
-                batch_results = fast_semantic_matching(batch)
-                all_results.extend(batch_results)
+        with st.spinner(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}..."):
+            all_results = []
+            for i in range(0, total_questions, batch_size):
+                batch = surveymonkey_questions[i:i + batch_size]
+                logger.info(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}")
+                with st.spinner(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}..."):
+                    batch_results = fast_semantic_matching(batch)
+                    all_results.extend(batch_results)
         logger.info(f"Batch processing completed: {len(all_results)} total results")
         return all_results
     except Exception as e:
@@ -461,14 +527,14 @@ def build_optimized_1to1_question_bank(df_reference):
         return pd.DataFrame()
     try:
         logger.info(f"Building optimized 1:1 question bank from {len(df_reference):,} Snowflake records")
-        df_reference['normalized_question'] = df_reference['heading_0'].apply(enhanced_normalize)
+        df_reference['normalized_question'] = df_reference['HEADING_0'].apply(enhanced_normalize)
         question_analysis = []
         grouped = df_reference.groupby('normalized_question')
         for norm_question, group in grouped:
             if not norm_question or len(norm_question.strip()) < 3:
                 continue
-            uid_counts = group['uid'].value_counts()
-            all_variants = group['heading_0'].unique()
+            uid_counts = group['UID'].value_counts()
+            all_variants = group['HEADING_0'].unique()
             best_question = get_best_question_for_uid(all_variants)
             if not best_question:
                 continue
@@ -710,7 +776,7 @@ def configure_survey():
             
             if st.button("🚀 Run UID Matching", type="primary"):
                 try:
-                    df_reference = get_cached_reference_questions()
+                    df_reference = get_all_reference_questions_from_snowflake()
                     if matching_approach == "🎯 Ultra-Fast Matching (1:1 Optimized, Recommended)":
                         if opt_ref.empty:
                             st.error("❌ 1:1 optimization not built yet. Please build it first.")
@@ -776,21 +842,21 @@ def configure_survey():
 def build_question_bank():
     st.title("🏗️ Build Question Bank")
     try:
-        df_reference = get_cached_reference_questions()
+        df_reference = get_all_reference_questions_from_snowflake()
         if not df_reference.empty:
             st.success(f"✅ Loaded {len(df_reference):,} reference questions")
             if st.button("🔄 Refresh Question Bank"):
                 st.cache_data.clear()
                 st.rerun()
         else:
-            st.warning("⚠️ No reference questions loaded. Check Snowflake table configuration.")
+            st.warning("⚠️ No reference questions loaded. Check Snowflake configuration.")
     except Exception as e:
         st.error(f"❌ Failed to build question bank: {str(e)}")
 
 def optimized_question_bank():
     st.title("🎯 Build Optimized 1:1 Question Bank")
     try:
-        df_reference = get_cached_reference_questions()
+        df_reference = get_all_reference_questions_from_snowflake()
         if not df_reference.empty:
             st.success(f"✅ Loaded {len(df_reference):,} reference questions")
             if st.button("🚀 Build Optimized 1:1 Question Bank"):
@@ -799,7 +865,7 @@ def optimized_question_bank():
                     if not optimized_df.empty:
                         st.success(f"✅ Optimization complete!")
         else:
-            st.warning("⚠️ No reference questions loaded. Check Snowflake table configuration.")
+            st.warning("⚠️ No reference questions loaded. Check Snowflake configuration.")
     except Exception as e:
         st.error(f"❌ Failed to build optimized question bank: {str(e)}")
 
