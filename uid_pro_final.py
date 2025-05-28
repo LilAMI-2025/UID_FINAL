@@ -164,24 +164,25 @@ def get_snowflake_engine():
         raise
 
 # Snowflake Query Functions
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600)
 def get_all_reference_questions_from_snowflake():
-    """
-    Fetch ALL reference questions from Snowflake with pagination
-    Returns: DataFrame with HEADING_0, UID, TITLE columns
+    """Fetch ALL reference questions from Snowflake with pagination.
+    
+    Returns:
+        pd.DataFrame: DataFrame with columns HEADING_0, UID, TITLE.
     """
     all_data = []
     limit = 10000
     offset = 0
+    query = """
+    SELECT HEADING_0, UID, TITLE
+    FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+    WHERE UID IS NOT NULL
+    ORDER BY CAST(UID AS INTEGER) ASC
+    LIMIT :limit OFFSET :offset
+    """
     
     while True:
-        query = """
-            SELECT HEADING_0, UID, TITLE
-            FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-            WHERE UID IS NOT NULL
-            ORDER BY CAST(UID AS INTEGER) ASC
-            LIMIT :limit OFFSET :offset
-        """
         try:
             with get_snowflake_engine().connect() as conn:
                 result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
@@ -218,16 +219,14 @@ def get_all_reference_questions_from_snowflake():
         st.warning("⚠️ No reference questions found in Snowflake")
         return pd.DataFrame()
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600)
 def run_snowflake_target_query():
-    """
-    Get target questions without UIDs from Snowflake
-    """
+    """Get target questions without UIDs from Snowflake."""
     query = """
-        SELECT DISTINCT HEADING_0, TITLE
-        FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-        WHERE UID IS NULL AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
-        ORDER BY HEADING_0
+    SELECT DISTINCT HEADING_0, TITLE
+    FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
+    WHERE UID IS NULL AND NOT LOWER(HEADING_0) LIKE 'our privacy policy%'
+    ORDER BY HEADING_0
     """
     try:
         with get_snowflake_engine().connect() as conn:
@@ -458,9 +457,6 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
         return fast_semantic_matching(surveymonkey_questions, use_cached_data=True)
 
 def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
-    """
-    Perform fast semantic matching using cached embeddings if available.
-    """
     if not surveymonkey_questions:
         st.warning("⚠️ No SurveyMonkey questions provided for matching")
         return []
@@ -507,9 +503,6 @@ def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
         return perform_semantic_matching(surveymonkey_questions, get_all_reference_questions_from_snowflake())
 
 def batch_process_matching(surveymonkey_questions, batch_size=100):
-    """
-    Process SurveyMonkey questions in batches for matching.
-    """
     if not surveymonkey_questions:
         st.warning("⚠️ No SurveyMonkey questions provided for batch processing")
         return []
@@ -562,7 +555,7 @@ def build_optimized_1to1_question_bank(df_reference):
             if not norm_question or len(norm_question.strip()) < 3:
                 logger.debug(f"Skipping invalid normalized question: {norm_question}")
                 continue
-            uid_counts = group['UID'].value_counts()
+            uid_counts = group['UID'].value_count
             all_variants = group['HEADING_0'].unique()
             best_question = get_best_question_for_uid(all_variants)
             if not best_question:
@@ -933,8 +926,14 @@ def settings():
     st.title("⚙️ Settings")
     st.info("Settings page not implemented in this version.")
 
-# Trigger optimization on startup
-ensure_optimized_reference()
+# Sidebar navigation
+st.sidebar.title("🧠 UID Matcher Pro")
+page = st.sidebar.selectbox(
+    "Navigate",
+    ["Home Dashboard", "View Surveys", "Create Survey", "Configure Survey",
+     "Build Question Bank", "Optimized 1:1 Question Bank", "Matching Dashboard", "Settings"]
+)
+st.session_state.page = page
 
 # Page Routing
 if st.session_state.page == "Home Dashboard":
