@@ -540,13 +540,11 @@ def get_survey_details(survey_id, token):
         return {}
 
 def extract_questions_from_surveymonkey(survey_data):
-    """Extract questions from SurveyMonkey with minimal changes - just add question_id"""
     try:
         questions = []
         if not survey_data or 'pages' not in survey_data:
             logger.warning("No pages found in survey data")
             return questions
-        
         for page in survey_data.get('pages', []):
             if 'questions' not in page:
                 continue
@@ -558,7 +556,7 @@ def extract_questions_from_surveymonkey(survey_data):
                         if 'answers' in question and 'choices' in question['answers']:
                             choices = [choice.get('text', '') for choice in question['answers']['choices'] if choice.get('text')]
                         questions.append({
-                            'question_id': question.get('id', ''),  # Only addition - question_id
+                            'question_id': question.get('id', ''),
                             'question_text': question_text,
                             'survey_title': survey_data.get('title', ''),
                             'choices': choices
