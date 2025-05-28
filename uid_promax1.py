@@ -161,7 +161,8 @@ def initialize_session_state():
         "surveymonkey_initialized": False,
         "optimized_question_bank": None,
         "uid_conflicts_summary": None,
-        "primary_matching_reference": None
+        "primary_matching_reference": None,
+        "fetched_survey_ids": []
     }
     
     for key, default_value in defaults.items():
@@ -274,6 +275,39 @@ def get_best_question_for_uid(variants):
         logger.error(f"Error selecting best question: {e}")
         return None
 
+def classify_question(text, heading_references=HEADING_REFERENCES):
+    """Classify question as Heading or Main Question"""
+    try:
+        # Length-based heuristic
+        if len(text.split()) > HEADING_LENGTH_THRESHOLD:
+            return "Heading"
+        
+        # TF-IDF similarity
+        try:
+            vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+            all_texts = heading_references + [text]
+            tfidf_vectors = vectorizer.fit_transform([enhanced_normalize(t) for t in all_texts])
+            similarity_scores = cosine_similarity(tfidf_vectors[-1], tfidf_vectors[:-1])
+            max_tfidf_score = np.max(similarity_scores)
+            
+            # Semantic similarity
+            model = load_sentence_transformer()
+            emb_text = model.encode([text], convert_to_tensor=True)
+            emb_refs = model.encode(heading_references, convert_to_tensor=True)
+            semantic_scores = util.cos_sim(emb_text, emb_refs)[0]
+            max_semantic_score = np.max(semantic_scores.cpu().numpy())
+            
+            # Combine criteria
+            if max_tfidf_score >= HEADING_TFIDF_THRESHOLD or max_semantic_score >= HEADING_SEMANTIC_THRESHOLD:
+                return "Heading"
+        except Exception as e:
+            logger.error(f"Question classification failed: {e}")
+        
+        return "Main Question/Multiple Choice"
+    except Exception as e:
+        logger.error(f"Error in classify_question: {e}")
+        return "Main Question/Multiple Choice"
+
 # Cached Resources
 @st.cache_resource
 def load_sentence_transformer():
@@ -328,7 +362,7 @@ def load_cached_survey_data():
 def save_cached_survey_data(all_questions, dedup_questions, dedup_choices):
     cache = {
         "timestamp": time.time(),
-        "all_questions": all_questions.to_dict(orient="records"),
+        "all_questions": all_questions.to_dict(orient="records") if not all_questions.empty else [],
         "dedup_questions": dedup_questions,
         "dedup_choices": dedup_choices
     }
@@ -352,7 +386,7 @@ def calculate_matched_percentage(df_final):
     matched_questions = eligible_questions[eligible_questions["Final_UID"].notna()]
     return round((len(matched_questions) / len(eligible_questions)) * 100, 2)
 
-# Snowflake Queries - Using working version
+# Snowflake Queries - Fixed column name handling
 def run_snowflake_reference_query(limit=10000, offset=0):
     query = """
         SELECT HEADING_0, MAX(UID) AS UID
@@ -364,6 +398,8 @@ def run_snowflake_reference_query(limit=10000, offset=0):
     try:
         with get_snowflake_engine().connect() as conn:
             result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
+        # Ensure consistent column naming
+        result.columns = result.columns.str.lower()
         return result
     except Exception as e:
         logger.error(f"Snowflake reference query failed: {e}")
@@ -371,7 +407,7 @@ def run_snowflake_reference_query(limit=10000, offset=0):
             st.warning("Snowflake connection failed: User account is locked. UID matching is disabled.")
         raise
 
-# Enhanced Snowflake query for optimization
+# Enhanced Snowflake query for optimization - Fixed column handling
 @st.cache_data(ttl=600)
 def get_all_reference_questions_from_snowflake():
     """Fetch ALL reference questions from Snowflake for optimization"""
@@ -401,6 +437,8 @@ def get_all_reference_questions_from_snowflake():
             if result.empty:
                 break
                 
+            # Ensure consistent column naming
+            result.columns = result.columns.str.lower()
             all_data.append(result)
             offset += limit
             
@@ -423,8 +461,9 @@ def get_all_reference_questions_from_snowflake():
             try:
                 with get_snowflake_engine().connect() as conn:
                     result = pd.read_sql(text(simple_query), conn, params={"limit": limit, "offset": offset})
-                # Add occurrence count as 1 for simple query
-                result['OCCURRENCE_COUNT'] = 1
+                # Ensure consistent column naming and add occurrence count
+                result.columns = result.columns.str.lower()
+                result['occurrence_count'] = 1
                 if result.empty:
                     break
                 all_data.append(result)
@@ -438,9 +477,8 @@ def get_all_reference_questions_from_snowflake():
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         # Ensure proper column naming
-        if 'OCCURRENCE_COUNT' not in final_df.columns:
-            final_df['OCCURRENCE_COUNT'] = 1
-        final_df.columns = ['heading_0', 'uid', 'occurrence_count']
+        if 'occurrence_count' not in final_df.columns:
+            final_df['occurrence_count'] = 1
         logger.info(f"Total reference questions fetched from Snowflake: {len(final_df)}")
         return final_df
     else:
@@ -469,77 +507,6 @@ def get_survey_details_with_retry(survey_id, token):
         raise requests.HTTPError("429 Too Many Requests")
     response.raise_for_status()
     return response.json()
-
-def create_survey(token, survey_template):
-    url = "https://api.surveymonkey.com/v3/surveys"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    response = requests.post(url, headers=headers, json={
-        "title": survey_template["title"],
-        "nickname": survey_template["nickname"],
-        "language": survey_template.get("language", "en")
-    })
-    response.raise_for_status()
-    return response.json().get("id")
-
-def create_page(token, survey_id, page_template):
-    url = f"https://api.surveymonkey.com/v3/surveys/{survey_id}/pages"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    response = requests.post(url, headers=headers, json={
-        "title": page_template.get("title", ""),
-        "description": page_template.get("description", "")
-    })
-    response.raise_for_status()
-    return response.json().get("id")
-
-def create_question(token, survey_id, page_id, question_template):
-    url = f"https://api.surveymonkey.com/v3/surveys/{survey_id}/pages/{page_id}/questions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {
-        "family": question_template["family"],
-        "subtype": question_template["subtype"],
-        "headings": [{"heading": question_template["heading"]}],
-        "position": question_template["position"],
-        "required": question_template.get("is_required", False)
-    }
-    if "choices" in question_template:
-        payload["answers"] = {"choices": question_template["choices"]}
-    if question_template["family"] == "matrix":
-        payload["answers"] = {
-            "rows": question_template.get("rows", []),
-            "choices": question_template.get("choices", [])
-        }
-    response = requests.post(url, headers=headers, json=payload)
-    response.raise_for_status()
-    return response.json().get("id")
-
-def classify_question(text, heading_references=HEADING_REFERENCES):
-    """Classify question as Heading or Main Question"""
-    # Length-based heuristic
-    if len(text.split()) > HEADING_LENGTH_THRESHOLD:
-        return "Heading"
-    
-    # TF-IDF similarity
-    try:
-        vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-        all_texts = heading_references + [text]
-        tfidf_vectors = vectorizer.fit_transform([enhanced_normalize(t) for t in all_texts])
-        similarity_scores = cosine_similarity(tfidf_vectors[-1], tfidf_vectors[:-1])
-        max_tfidf_score = np.max(similarity_scores)
-        
-        # Semantic similarity
-        model = load_sentence_transformer()
-        emb_text = model.encode([text], convert_to_tensor=True)
-        emb_refs = model.encode(heading_references, convert_to_tensor=True)
-        semantic_scores = util.cos_sim(emb_text, emb_refs)[0]
-        max_semantic_score = np.max(semantic_scores.cpu().numpy())
-        
-        # Combine criteria
-        if max_tfidf_score >= HEADING_TFIDF_THRESHOLD or max_semantic_score >= HEADING_SEMANTIC_THRESHOLD:
-            return "Heading"
-    except Exception as e:
-        logger.error(f"Question classification failed: {e}")
-    
-    return "Main Question/Multiple Choice"
 
 def extract_questions(survey_json):
     """Extract questions from SurveyMonkey with question_uid (question_id)"""
@@ -601,7 +568,7 @@ def extract_questions(survey_json):
                         })
     return questions
 
-# Enhanced Question Bank Builder with 1:1 Optimization
+# Enhanced Question Bank Builder with 1:1 Optimization - Fixed column handling
 def build_optimized_1to1_question_bank(df_reference):
     """Build optimized 1:1 question bank with conflict resolution"""
     if df_reference.empty:
@@ -723,7 +690,8 @@ def build_optimized_1to1_question_bank(df_reference):
                 'winner_count': 'Authority_Count',
                 'quality_score': 'Quality_Score'
             })
-logger.info(f"Built optimized 1:1 question bank: {len(optimized_df):,} unique questions, {len(conflicts_df):,} conflicts resolved")
+            
+            logger.info(f"Built optimized 1:1 question bank: {len(optimized_df):,} unique questions, {len(conflicts_df):,} conflicts resolved")
             
         return optimized_df, conflicts_df
         
@@ -978,6 +946,15 @@ def check_snowflake_connection():
     except Exception as e:
         return False, f"Connection failed: {str(e)}"
 
+# Safe secrets access
+def get_surveymonkey_token():
+    """Safely get SurveyMonkey token"""
+    try:
+        return st.secrets["surveymonkey"]["token"]
+    except Exception as e:
+        logger.error(f"Failed to get SurveyMonkey token: {e}")
+        return None
+
 # ============= SIDEBAR NAVIGATION =============
 
 with st.sidebar:
@@ -1051,18 +1028,22 @@ if "snowflake" not in st.secrets or "surveymonkey" not in st.secrets:
     st.markdown('<div class="warning-card">⚠️ Missing secrets configuration for Snowflake or SurveyMonkey.</div>', unsafe_allow_html=True)
     st.stop()
 
-# Load initial data
+# Load initial data with error handling
 try:
-    token = st.secrets["surveymonkey"]["token"]
-    surveys = get_surveys_cached(token)
-    if not surveys:
-        st.error("No surveys found.")
-        st.stop()
+    token = get_surveymonkey_token()
+    if not token:
+        st.error("❌ Failed to get SurveyMonkey token")
+        surveys = []
+    else:
+        surveys = get_surveys_cached(token)
+        if not surveys:
+            st.error("No surveys found.")
+            surveys = []
 
     # Load cached survey data
     if st.session_state.all_questions is None:
         cached_questions, cached_dedup_questions, cached_dedup_choices = load_cached_survey_data()
-        if cached_questions is not None:
+        if cached_questions is not None and not cached_questions.empty:
             st.session_state.all_questions = cached_questions
             st.session_state.dedup_questions = cached_dedup_questions
             st.session_state.dedup_choices = cached_dedup_choices
@@ -1078,7 +1059,7 @@ try:
 
 except Exception as e:
     st.error(f"SurveyMonkey initialization failed: {e}")
-    st.stop()
+    surveys = []
 
 # ============= PAGE ROUTING =============
 
@@ -1185,6 +1166,10 @@ elif st.session_state.page == "survey_selection":
     st.markdown("## 📋 Survey Selection & Question Bank")
     st.markdown('<div class="data-source-info">📊 <strong>Data Source:</strong> SurveyMonkey API - Survey selection and question extraction</div>', unsafe_allow_html=True)
     
+    if not surveys:
+        st.markdown('<div class="warning-card">⚠️ No surveys available. Check SurveyMonkey connection.</div>', unsafe_allow_html=True)
+        st.stop()
+    
     # Survey Selection
     st.markdown("### 🔍 Select Surveys")
     survey_options = [f"{s['id']} - {s['title']}" for s in surveys]
@@ -1204,12 +1189,8 @@ elif st.session_state.page == "survey_selection":
             st.rerun()
     
     # Process selected surveys
-    if selected_survey_ids:
+    if selected_survey_ids and token:
         combined_questions = []
-        
-        # Initialize session state for fetched survey IDs if not exists
-        if not hasattr(st.session_state, 'fetched_survey_ids'):
-            st.session_state.fetched_survey_ids = []
         
         # Check which surveys need to be fetched
         surveys_to_fetch = [sid for sid in selected_survey_ids 
@@ -1325,13 +1306,13 @@ elif st.session_state.page == "uid_matching":
         surveys = st.session_state.df_target["survey_id"].nunique()
         st.metric("Surveys", surveys)
     
-     # Run UID Matching
+    # Run UID Matching
     if st.session_state.df_final is None or st.button("🚀 Run UID Matching", type="primary"):
         try:
             with st.spinner("🔄 Matching UIDs with Snowflake references..."):
                 if st.session_state.question_bank is not None and not st.session_state.question_bank.empty:
                     st.session_state.df_final = run_uid_match(st.session_state.question_bank, st.session_state.df_target)
-else:
+                else:
                     st.session_state.df_final = st.session_state.df_target.copy()
                     st.session_state.df_final["Final_UID"] = None
         except Exception as e:
@@ -1570,7 +1551,7 @@ elif st.session_state.page == "conflict_dashboard":
         if st.button("🎯 Build Question Bank"):
             st.session_state.page = "build_optimization"
             st.rerun()
-        return
+        st.stop()
     
     st.markdown('<div class="success-card">✅ Conflict analysis complete</div>', unsafe_allow_html=True)
     
