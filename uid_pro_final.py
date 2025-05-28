@@ -337,19 +337,18 @@ def load_sentence_transformer():
 
 def prepare_matching_data():
     try:
-        try:
-            ref_questions = get_all_reference_questions_from_snowflake()
-            if ref_questions.empty:
-                return [], None, {}
-            model = load_sentence_transformer()
-            ref_texts = ref_questions['HEADING_0'].tolist()
-            ref_embeddings = model.encode(text, convert_to_tensor=True)
-            uid_lookup = {i: uid for i, uid in enumerate(ref_questions['UID'])}
-            return ref_texts, ref_embeddings, uid_lookup
-    except Exception as e:
-            logger.error(f"Error preparing matching data: {e}")
-            st.error(f"❌ Failed to prepare matching data: {str(e)}")
+        ref_questions = get_all_reference_questions_from_snowflake()
+        if ref_questions.empty:
             return [], None, {}
+        model = load_sentence_transformer()
+        ref_texts = ref_questions['HEADING_0'].tolist()
+        ref_embeddings = model.encode(ref_texts, convert_to_tensor=True)
+        uid_lookup = {i: uid for i, uid in enumerate(ref_questions['UID'])}
+        return ref_texts, ref_embeddings, uid_lookup
+    except Exception as e:
+        logger.error(f"Error preparing matching data: {e}")
+        st.error(f"❌ Failed to prepare matching data: {str(e)}")
+        return [], None, {}
 
 def perform_semantic_matching(surveymonkey_questions, df_reference):
     if not surveymonkey_questions or df_reference.empty:
@@ -368,7 +367,7 @@ def perform_semantic_matching(surveymonkey_questions, df_reference):
             best_score = similarities[i][best_match_idx].item()
             result = sm_question.copy()
             if best_score >= SEMANTIC_THRESHOLD:
-                result['matched_uid'] = df_reference.iloc[best_match_idx]['matched_uid']
+                result['matched_uid'] = df_reference.iloc[best_match_idx]['UID']
                 result['matched_heading_0'] = df_reference.iloc[best_match_idx]['HEADING_0']
                 result['match_score'] = best_score
                 result['match_confidence'] = "High" if best_score >= 0.8 else "Medium"
@@ -397,7 +396,8 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
             logger.info(f"Using optimized reference with {len(optimized_ref)} unique questions")
             ref_texts = optimized_ref['best_question'].tolist()
         else:
-            return fast_semantic_matching(surveymonkey_questions, use_cached_data=True)
+            optimized_ref = get_all_reference_questions_from_snowflake()
+            ref_texts = optimized_ref['HEADING_0'].tolist()
         model = load_sentence_transformer()
         sm_texts = [q['question_text'] for q in surveymonkey_questions]
         logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions against {len(ref_texts)} optimized reference")
@@ -411,13 +411,13 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
             result = sm_question.copy()
             if best_score >= SEMANTIC_THRESHOLD:
                 matched_row = optimized_ref.iloc[best_match_idx]
-                result['matched_uid'] = matched_row['winner_uid']
-                result['matched_heading_0'] = matched_row['best_question']
+                result['matched_uid'] = matched_row['uid'] if use_optimized_reference else matched_row['UID']
+                result['matched_heading_0'] = matched_row['best_question'] if use_optimized_reference else matched_row['HEADING_0']
                 result['match_score'] = best_score
                 result['match_confidence'] = "High" if best_score >= 0.8 else "Medium"
-                result['conflict_resolved'] = matched_row['has_conflicts']
-                result['uid_authority'] = matched_row['winner_count']
-                result['conflict_severity'] = matched_row.get('conflict_severity', 0)
+                result['conflict_resolved'] = matched_row['has_conflicts'] if use_optimized_reference else False
+                result['uid_authority'] = matched_row['winner_count'] if use_optimized_reference else 0
+                result['conflict_severity'] = matched_row.get('conflict_severity', 0) if use_optimized_reference else 0
             else:
                 result['matched_uid'] = None
                 result['matched_heading_0'] = None
@@ -436,8 +436,9 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
 
 def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
     """
+    Perform fast semantic matching using cached embeddings if available.
+    """
     if not surveymonkey_questions:
-        """
         st.warning("⚠️ No SurveyMonkey questions provided for matching")
         return []
     try:
@@ -446,12 +447,12 @@ def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
             if ref_embeddings is None:
                 st.warning("⚠️ Cached data not available, falling back to slow matching")
                 return perform_semantic_matching(surveymonkey_questions, get_all_reference_questions_from_snowflake())
-            
-else:
+        else:
             ref_questions = get_all_reference_questions_from_snowflake()
             return perform_semantic_matching(surveymonkey_questions, ref_questions)
+        
         model = load_sentence_transformer()
-            sm_texts = [q['question_text'] for q in surveymonkey_questions]
+        sm_texts = [q['question_text'] for q in surveymonkey_questions]
         logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions")
         sm_embeddings = model.encode(sm_texts, convert_to_tensor=True)
         logger.info("Calculating similarities using pre-computed embeddings")
@@ -475,30 +476,31 @@ else:
                 result['match_confidence'] = "Low"
             matched_results.append(result)
         logger.info(f"Fast semantic matching completed for {len(matched_results)} questions")
-            return matched_results
+        return matched_results
     except Exception as e:
         logger.error(f"Fast semantic matching failed: {e}")
         st.error(f"❌ Fast matching failed: {str(e)}. Falling back to standard matching.")
         return perform_semantic_matching(surveymonkey_questions, get_all_reference_questions_from_snowflake())
 
 def batch_process_matching(surveymonkey_questions, batch_size=100):
-    """ if not surveymonkey_questions:
     """
+    Process SurveyMonkey questions in batches for matching.
+    """
+    if not surveymonkey_questions:
         st.warning("⚠️ No SurveyMonkey questions provided for batch processing")
         return []
     try:
         total_questions = len(surveymonkey_questions)
         if total_questions <= batch_size:
-            return fast_semantic_matching(surveysmonkey_questions)
+            return fast_semantic_matching(surveymonkey_questions)
         logger.info(f"Processing {total_questions} questions in batches of {batch_size}")
-        with st.spinner(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}..."):
-            all_results = []
-            for i in range(0, total_questions, batch_size):
-                batch = surveymonkey_questions[i:i + batch_size]
-                logger.info(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}")
-                with st.spinner(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}..."):
-                    batch_results = fast_semantic_matching(batch)
-                    all_results.extend(batch_results)
+        all_results = []
+        for i in range(0, total_questions, batch_size):
+            batch = surveymonkey_questions[i:i + batch_size]
+            logger.info(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}")
+            with st.spinner(f"Processing batch {i//batch_size + 1}/{(total_questions-1)//batch_size + 1}..."):
+                batch_results = fast_semantic_matching(batch)
+                all_results.extend(batch_results)
         logger.info(f"Batch processing completed: {len(all_results)} total results")
         return all_results
     except Exception as e:
@@ -552,7 +554,7 @@ def build_optimized_1to1_question_bank(df_reference):
             question_analysis.append({
                 'normalized_question': norm_question,
                 'best_question': best_question,
-                'winner_uid': winner_uid,
+                'uid': winner_uid,  # Fixed from winner_uid
                 'winner_count': winner_count,
                 'total_occurrences': len(group),
                 'unique_uids_count': len(uid_counts),
