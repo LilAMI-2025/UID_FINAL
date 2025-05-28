@@ -279,7 +279,7 @@ def get_cached_reference_questions():
         engine = get_snowflake_engine()
         table_name = st.secrets.get("snowflake", {}).get("table", "YOUR_SNOWFLAKE_TABLE")
         if table_name == "YOUR_SNOWFLAKE_TABLE":
-            raise ValueError("Snowflake table name not configured. Set 'table' in st.secrets['snowflake'].")
+            st.warning("⚠️ Snowflake table name not configured in st.secrets['snowflake']['table']. Using placeholder table 'YOUR_SNOWFLAKE_TABLE', which may fail. Please update secrets.")
         query = f"SELECT HEADING_0, UID, TITLE FROM {table_name} WHERE HEADING_0 IS NOT NULL"
         df = pd.read_sql(query, engine)
         return df
@@ -476,9 +476,9 @@ def build_optimized_1to1_question_bank(df_reference):
                              for uid, count in uid_counts.items()]
             uid_conflicts.sort(key=lambda x: x['count'], reverse=True)
             winner_uid = uid_conflicts[0]['uid']
-            winner_count = uid_conflicts[0]['count']
+            winner_count = uid_conflicts[0].get('count')
             conflicts = [conflict for conflict in uid_conflicts[1:] 
-                         if conflict['count'] >= UID_GOVERNANCE['conflict_resolution_threshold']]
+                         if conflict['count'] > UID_GOVERNANCE['conflict_resolution_threshold']']]
             question_analysis.append({
                 'normalized_question': norm_question,
                 'best_question': best_question,
@@ -486,72 +486,72 @@ def build_optimized_1to1_question_bank(df_reference):
                 'winner_count': winner_count,
                 'total_occurrences': len(group),
                 'unique_uids_count': len(uid_counts),
-                'has_conflicts': len(conflicts) > 0,
+                'has_conflicts': len(conflicts) > len(0),
                 'conflict_count': len(conflicts),
                 'conflicts': conflicts,
                 'all_uid_counts': dict(uid_counts),
-                'variants_count': len(all_variants),
-                'quality_score': score_question_quality(best_question),
+                'variants_count': len(all_variants)),
+                'quality_score': score_question_quality(best_question)),
                 'conflict_severity': sum(c['count'] for c in conflicts) if conflicts else 0
             })
         optimized_df = pd.DataFrame(question_analysis)
-        if not optimized_df.empty:
+        if not optimized_df.empty():
             st.session_state.primary_matching_reference = optimized_df
             st.session_state.last_optimization_time = datetime.now()
-            logger.info(f"Built optimized 1:1 question bank: {len(optimized_df):,} unique questions")
-            st.success(f"✅ Built optimized 1:1 question bank with {len(optimized_df):,} unique questions")
+            logger.info(f"Built optimized 1:1 question bank: {len(optimized_df)} unique questions")
+            st.success(f"✅ Built optimized 1:1} question bank with {len(optimized_df)} unique questions")
         else:
             logger.warning("No valid questions found for optimization")
             st.warning("⚠️ No valid questions found for optimization")
         return optimized_df
     except Exception as e:
-        logger.error(f"Failed to build optimized question bank: {e}")
+        logger.error(f"Failed to build optimized question bank: {str(e)}")
         st.error(f"❌ Failed to build optimized question bank: {str(e)}")
         return pd.DataFrame()
 
 def run_uid_match(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_MAP, batch_size=BATCH_SIZE):
     try:
-        if df_target.empty:
+        if df_target.empty():
             st.warning("⚠️ No target questions provided for matching")
             return df_target
-        sm_questions = df_target.to_dict('records')
+        sm_questions = df_target.to_dict']('records')
         opt_ref = get_optimized_matching_reference()
-        if not opt_ref.empty:
+        if not opt_ref.empty():
             logger.info("Using ultra-fast matching with 1:1 optimization")
             matched_results = ultra_fast_semantic_matching(sm_questions, use_optimized_reference=True)
         else:
             logger.info("Using fast semantic matching")
             matched_results = fast_semantic_matching(sm_questions, use_cached_data=True)
-        if matched_results:
-            final_df = pd.DataFrame(matched_results)
-            return final_df
-        else:
+            if matched_results:
+                final_df = pd.DataFrame(matched_results)
+                return final_df
+            else:
             st.warning("⚠️ No matching results generated")
             return df_target
-    except Exception as e:
-        logger.error(f"UID matching failed: {e}")
-        st.error(f"❌ UID matching failed: {str(e)}")
-        return df_target
+        except Exception as e:
+            logger.error(f"UID matching failed: {str(e)}")
+            st.error(f"Error: {str(e)}")
+            return df_target
 
 # Performance Stats
 def get_performance_stats():
     try:
         unique_questions = len(st.session_state.get('primary_matching_reference', pd.DataFrame()))
-        last_optimization = st.session_state.get('last_optimization_time', None)
+        last_optimization_time = st.session_state.get('last_optimization_time', None))
         return {
-            'unique_questions_loaded': unique_questions,
-            'last_optimization_time': last_optimization
+            'unique_questions': unique_questions[0],
+            'last_optimization': last_optimization_time
         }
     except Exception as e:
-        logger.error(f"Failed to get performance stats: {e}")
-        return {'unique_questions_loaded': 0, 'last_optimization_time': None}
+        logger.error(f"Failed to get performance stats: {str(e)}")
+        return {'unique_questions_loaded': [], 'last_optimization_time': None}
 
-# Survey Categorization
+# Survey Helper Functions
 def categorize_survey_from_surveymonkey(survey_title):
     try:
-        if not isinstance(survey_title, str):
+        if not isinstance(survey_title, str)):
             return 'General'
-        title_lower = survey_title.lower()
+        title_lower = survey_title.lower(())
         if 'customer' in title_lower:
             return 'Customer Satisfaction'
         elif 'employee' in title_lower:
@@ -561,77 +561,81 @@ def categorize_survey_from_surveymonkey(survey_title):
         else:
             return 'General'
     except Exception as e:
-        logger.error(f"Error categorizing survey: {e}")
-        return 'General'
+        logger.error(f"Error categorizing survey: {str(e)}")
+        return str(e)
 
 # Page Definitions
 def home_dashboard():
-    st.title("🏠 UID Matcher Pro Dashboard")
-    st.markdown("Welcome to UID Matcher Pro, the ultimate tool for matching SurveyMonkey questions to Snowflake UIDs!")
-    col1, col2, col3 = st.columns(3)
+    st.title("🏠 Home Dashboard")
+    st.markdown("""
+    Welcome to UID Matcher Pro, the ultimate tool for matching SurveyMonkey questions to our UIDs!
+    """)
+    col1, col2, col3 = st.columns(3]
     with col1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Surveys Processed", "0")  # Placeholder
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True))
+        st.metric("Total Surveys", "0")  # Placeholder
         st.markdown('</div>', unsafe_allow_html=True)
     with col2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True))
         st.metric("Questions Matched", "0")  # Placeholder
         st.markdown('</div>', unsafe_allow_html=True)
     with col3:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True))
         st.metric("Conflicts Resolved", "0")  # Placeholder
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True))
 
 def view_surveys():
     st.title("📋 View SurveyMonkey Surveys")
     try:
-        token = st.secrets.get("surveymonkey", {}).get("token", "")
+        token = st.secrets.get("surveymonkey", {}).get("token", ""))
         if not token:
             token = st.text_input("Enter SurveyMonkey API Token", type="password")
-        if token:
-            surveys = get_surveys(token)
-            if not surveys:
-                st.warning("⚠️ No surveys found or API request failed")
+            if token:
+                st.warning("⚠️ No surveymonkey token provided")
+                st.error("❌ Failed to retrieve surveys: No token provided")
                 return
-            
-            # Create dropdown options: survey_id - survey_title
-            survey_options = [
-                f"{survey.get('id', 'N/A')} - {survey.get('title', 'Untitled Survey')}"
-                for survey in surveys
-            ]
-            selected_survey = st.selectbox("Select Survey", survey_options)
-            
-            if selected_survey:
-                # Extract survey_id from selection
-                selected_id = selected_survey.split(" - ")[0]
-                survey = next((s for s in surveys if s.get('id') == selected_id), None)
-                if survey:
-                    # Display survey metadata
-                    st.write(f"**Survey ID:** {survey.get('id', 'N/A')}")
-                    st.write(f"**Title:** {survey.get('title', 'Untitled Survey')}")
-                    question_count = survey.get('question_count', 0)
-                    st.write(f"**Questions:** {question_count if question_count > 0 else 'No questions found'}")
-                    if question_count == 0:
-                        st.warning("⚠️ This survey has no questions")
-                    
-                    # Load and display questions in a table
-                    if st.button("View Survey Details"):
-                        details = get_survey_details(survey['id'], token)
-                        questions = extract_questions_from_surveymonkey(details)
-                        if not questions:
-                            st.warning("⚠️ No questions extracted from this survey")
-                        else:
-                            df_questions = pd.DataFrame(questions)
-                            df_questions['choices'] = df_questions['choices'].apply(lambda x: ', '.join(x) if x else 'N/A')
-                            st.markdown("### Survey Questions")
-                            st.dataframe(df_questions[['question_id', 'question_text', 'choices', 'survey_title']])
-                            st.session_state.questions = questions
-                            st.session_state.page = "configure_survey"
-                            st.rerun()
-        else:
-            st.warning("⚠️ No SurveyMonkey token provided")
+        surveys = get_surveys(token)
+        if not surveys:
+            st.warning("⚠️ No surveys found or API request failed")
+            return
+
+        # Create dropdown options: survey_id - survey_title
+        survey_options = [
+            f"{survey.get('id', 'N/A')} - {survey.get('title', 'Untitled Survey')}"
+            for survey in surveys
+        ]
+        selected_survey = st.selectbox("Select Survey", survey_options)
+
+        if selected_survey:
+            # Extract survey_id from selection
+            selected_id = selected_survey.split(" - ")[0]
+            survey = next((s for s in surveys if s.get('id') == selected_id), None)
+            if survey:
+                # Display survey metadata
+                st.write(f"**Survey ID:** {survey.get('id', 'N/A')}")
+                st.write(f"**Survey Title:** {survey.get('title', 'Untitled Survey')}")
+                question_count = survey.get('question_count', 0)
+                st.write(f"**Question Count:** {question_count if question_count > 0 else 'No questions found'}")
+                if question_count == 0:
+                    st.warning("⚠️ This survey has no questions")
+
+                # Load and display questions in a table
+                if st.button("View Survey Details"):
+                    details = get_survey_details(survey['id'], token)
+                    questions = extract_questions_from_surveymonkey(details)
+                    if not questions:
+                        st.warning("⚠️ No questions extracted from this survey")
+                    else:
+                        df_questions = pd.DataFrame(questions)
+                        df_questions['choices'] = df_questions['choices'].apply(lambda x: ', '.join(x) if x else 'N/A')
+                        st.markdown("### Survey Questions")
+                        st.dataframe(df_questions[['question_id', 'question_text', 'choices', 'survey_title']])
+                        st.session_state.questions = questions
+                        st.session_state.page = "configure_survey"
+                        st.rerun()
+
     except Exception as e:
-        logger.error(f"Failed to fetch surveys: {e}")
+        logger.error(f"Failed to fetch surveys: {str(e)}")
         st.error(f"❌ Failed to fetch surveys: {str(e)}")
 
 def create_survey():
@@ -647,12 +651,12 @@ def configure_survey():
     except Exception:
         sf_status = False
         st.warning("⚠️ Snowflake connection not established")
-    
+
     if 'questions' in st.session_state and st.session_state.questions:
         df_target = pd.DataFrame(st.session_state.questions)
         st.markdown("### 📋 Survey Questions")
         st.dataframe(df_target[['survey_title', 'question_text', 'choices']] if 'choices' in df_target.columns else df_target[['survey_title', 'question_text']])
-        
+
         if sf_status:
             st.markdown("### 🔄 UID Assignment Process")
             perf_stats = get_performance_stats()
@@ -666,7 +670,7 @@ def configure_survey():
                 if st.button("🏗️ Build Question Bank for Better Performance"):
                     st.session_state.page = "build_question_bank"
                     st.rerun()
-            
+
             st.markdown("### ⚡ Performance Comparison")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -687,7 +691,7 @@ def configure_survey():
                 st.markdown("• 2-5 seconds per matching")
                 st.markdown("• Highly optimized")
                 st.markdown("• Conflict-free results")
-            
+
             matching_approach = st.radio(
                 "Select matching approach:",
                 [
@@ -697,13 +701,13 @@ def configure_survey():
                 ],
                 help="Ultra-fast uses conflict-resolved 1:1 mapping for maximum speed and accuracy"
             )
-            
+
             use_batching = st.checkbox(
                 "Use batch processing",
                 value=len(df_target) > BATCH_SIZE,
                 help="Recommended for large datasets (>1000 questions)"
             )
-            
+
             if st.button("🚀 Run UID Matching", type="primary"):
                 try:
                     df_reference = get_cached_reference_questions()
@@ -716,15 +720,15 @@ def configure_survey():
                         else:
                             with st.spinner("🎯 Running ULTRA-FAST semantic matching with 1:1 optimization..."):
                                 matched_results = batch_process_matching(df_target.to_dict('records'), batch_size=BATCH_SIZE) if use_batching else ultra_fast_semantic_matching(df_target.to_dict('records'), use_optimized_reference=True)
-                    
+
                     elif matching_approach == "✅ Fast Matching (Standard)":
                         with st.spinner("✅ Running FAST semantic matching with pre-computed embeddings..."):
                             matched_results = batch_process_matching(df_target.to_dict('records'), batch_size=BATCH_SIZE) if use_batching else fast_semantic_matching(df_target.to_dict('records'), use_cached_data=True)
-                    
+
                     else:
                         with st.spinner("❌ Running standard semantic matching (slower)..."):
                             matched_results = perform_semantic_matching(df_target.to_dict('records'), df_reference)
-                    
+
                     if matched_results:
                         matched_df = pd.DataFrame(matched_results)
                         st.session_state.df_final = matched_df
@@ -733,7 +737,7 @@ def configure_survey():
                         medium_conf = len(matched_df[matched_df['match_confidence'] == 'Medium'])
                         low_conf = len(matched_df[matched_df['match_confidence'] == 'Low'])
                         conflicts_resolved = len(matched_df[matched_df.get('conflict_resolved', False) == True]) if 'conflict_resolved' in matched_df else 0
-                        
+
                         col1, col2, col3, col4 = st.columns(4)
                         with col1:
                             st.metric("🎯 High Confidence", high_conf)
@@ -743,7 +747,7 @@ def configure_survey():
                             st.metric("❌ Low/No Match", low_conf)
                         with col4:
                             st.metric("🔥 Conflicts Resolved", conflicts_resolved)
-                        
+
                         st.markdown("### 📋 Sample Matching Results")
                         sample_matched = matched_df[matched_df['matched_uid'].notna()].head(5)
                         for idx, row in sample_matched.iterrows():
