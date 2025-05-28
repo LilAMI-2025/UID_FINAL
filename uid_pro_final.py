@@ -153,6 +153,7 @@ def get_snowflake_engine():
                 )
                 with engine.connect() as conn:
                     conn.execute(text("SELECT CURRENT_VERSION()"))
+                logger.info("Snowflake connection successful")
                 return engine
             except Exception as e:
                 if attempt == 2:
@@ -193,6 +194,7 @@ def get_all_reference_questions_from_snowflake():
                 result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
             
             if result.empty:
+                logger.info(f"No more data at offset {offset}")
                 break
                 
             all_data.append(result)
@@ -209,7 +211,9 @@ def get_all_reference_questions_from_snowflake():
                 st.warning("🔒 Cannot fetch Snowflake data: User account is locked.")
             error_msg = f"❌ Failed to fetch reference data: {str(e)}"
             if "Object does not exist" in str(e):
-                error_msg += "\nEnsure the table 'AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' exists."
+                error_msg += "\nEnsure the table 'AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE' exists and is accessible."
+            if "not authorized" in str(e).lower():
+                error_msg += "\nCheck permissions for user 'ami_tableau' with role 'TABLEAU'."
             st.error(error_msg)
             return pd.DataFrame()
     
@@ -221,6 +225,7 @@ def get_all_reference_questions_from_snowflake():
         return final_df
     else:
         logger.warning("No reference data fetched from Snowflake")
+        st.warning("⚠️ No reference questions found in Snowflake")
         return pd.DataFrame()
 
 @st.cache_data(ttl=600)  # Cache for 10 minutes
@@ -237,6 +242,7 @@ def run_snowflake_target_query():
     try:
         with get_snowflake_engine().connect() as conn:
             result = pd.read_sql(text(query), conn)
+        logger.info(f"Fetched {len(result)} target questions from Snowflake")
         return result
     except Exception as e:
         logger.error(f"Snowflake target query failed: {e}")
@@ -257,7 +263,7 @@ def get_surveys(token):
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
                 data = response.json().get("data", [])
-                logger.info(f"SurveyMonkey surveys response: {json.dumps(data[:2], indent=2)}")
+                logger.info(f"SurveyMonkey surveys fetched: {len(data)} surveys")
                 for survey in data:
                     if 'question_count' not in survey or survey['question_count'] is None:
                         details = get_survey_details(survey['id'], token)
@@ -271,7 +277,10 @@ def get_surveys(token):
                 time.sleep(1)
     except Exception as e:
         logger.error(f"Failed to fetch surveys: {e}")
-        st.error(f"❌ Failed to fetch surveys: {str(e)}")
+        if "401" in str(e):
+            st.error("❌ Invalid SurveyMonkey token. Please check your API token.")
+        else:
+            st.error(f"❌ Failed to fetch surveys: {str(e)}")
         return []
 
 def get_survey_details(survey_id, token):
@@ -283,8 +292,9 @@ def get_survey_details(survey_id, token):
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
                 data = response.json()
-                logger.info(f"SurveyMonkey details for ID {survey_id}: {json.dumps(data.get('pages', [])[:1], indent=2)}")
-                if not data.get('pages'):
+                pages = data.get('pages', [])
+                logger.info(f"SurveyMonkey details for ID {survey_id}: {len(pages)} pages")
+                if not pages:
                     logger.warning(f"No pages found for survey ID {survey_id}")
                 return data
             except requests.RequestException as e:
@@ -294,7 +304,7 @@ def get_survey_details(survey_id, token):
                 time.sleep(1)
     except Exception as e:
         logger.error(f"Failed to fetch survey details for ID {survey_id}: {e}")
-        st.error(f"❌ Failed to fetch survey details: {str(e)}")
+        st.error(f"❌ Failed to fetch survey details for ID {survey_id}: {str(e)}")
         return {}
 
 def extract_questions_from_surveymonkey(survey_data):
@@ -339,11 +349,13 @@ def prepare_matching_data():
     try:
         ref_questions = get_all_reference_questions_from_snowflake()
         if ref_questions.empty:
+            logger.warning("No reference questions available for matching")
             return [], None, {}
         model = load_sentence_transformer()
         ref_texts = ref_questions['HEADING_0'].tolist()
         ref_embeddings = model.encode(ref_texts, convert_to_tensor=True)
         uid_lookup = {i: uid for i, uid in enumerate(ref_questions['UID'])}
+        logger.info(f"Prepared {len(ref_texts)} reference embeddings")
         return ref_texts, ref_embeddings, uid_lookup
     except Exception as e:
         logger.error(f"Error preparing matching data: {e}")
@@ -377,6 +389,7 @@ def perform_semantic_matching(surveymonkey_questions, df_reference):
                 result['match_score'] = best_score
                 result['match_confidence'] = "Low"
             matched_results.append(result)
+        logger.info(f"Standard semantic matching completed: {len(matched_results)} results")
         return matched_results
     except Exception as e:
         logger.error(f"Semantic matching failed: {e}")
@@ -391,6 +404,7 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
         if use_optimized_reference:
             optimized_ref = get_optimized_matching_reference()
             if optimized_ref.empty:
+                logger.warning("Optimized reference is empty, falling back to fast matching")
                 st.warning("⚠️ Optimized reference not built. Falling back to fast matching.")
                 return fast_semantic_matching(surveymonkey_questions, use_cached_data=True)
             logger.info(f"Using optimized reference with {len(optimized_ref)} unique questions")
@@ -400,7 +414,7 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
             ref_texts = optimized_ref['HEADING_0'].tolist()
         model = load_sentence_transformer()
         sm_texts = [q['question_text'] for q in surveymonkey_questions]
-        logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions against {len(ref_texts)} optimized reference")
+        logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions against {len(ref_texts)} reference")
         sm_embeddings = model.encode(sm_texts, convert_to_tensor=True)
         ref_embeddings = model.encode(ref_texts, convert_to_tensor=True)
         similarities = util.cos_sim(sm_embeddings, ref_embeddings)
@@ -427,7 +441,7 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
                 result['uid_authority'] = 0
                 result['conflict_severity'] = 0
             matched_results.append(result)
-        logger.info(f"Ultra-fast semantic matching completed for {len(matched_results)} questions")
+        logger.info(f"Ultra-fast semantic matching completed: {len(matched_results)} results")
         return matched_results
     except Exception as e:
         logger.error(f"Ultra-fast semantic matching failed: {e}")
@@ -445,6 +459,7 @@ def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
         if use_cached_data:
             ref_questions, ref_embeddings, uid_lookup = prepare_matching_data()
             if ref_embeddings is None:
+                logger.warning("Cached embeddings not available, falling back to standard matching")
                 st.warning("⚠️ Cached data not available, falling back to slow matching")
                 return perform_semantic_matching(surveymonkey_questions, get_all_reference_questions_from_snowflake())
         else:
@@ -475,7 +490,7 @@ def fast_semantic_matching(surveymonkey_questions, use_cached_data=True):
                 result['match_score'] = best_score
                 result['match_confidence'] = "Low"
             matched_results.append(result)
-        logger.info(f"Fast semantic matching completed for {len(matched_results)} questions")
+        logger.info(f"Fast semantic matching completed: {len(matched_results)} results")
         return matched_results
     except Exception as e:
         logger.error(f"Fast semantic matching failed: {e}")
@@ -513,8 +528,10 @@ def batch_process_matching(surveymonkey_questions, batch_size=100):
 def get_optimized_matching_reference():
     try:
         if 'primary_matching_reference' in st.session_state and st.session_state.primary_matching_reference is not None:
+            logger.info(f"Returning cached optimized reference with {len(st.session_state.primary_matching_reference)} questions")
             return st.session_state.primary_matching_reference
         else:
+            logger.warning("Optimized 1:1 question bank not built")
             st.warning("⚠️ Optimized 1:1 question bank not built yet")
             return pd.DataFrame()
     except Exception as e:
@@ -525,6 +542,7 @@ def get_optimized_matching_reference():
 @monitor_performance
 def build_optimized_1to1_question_bank(df_reference):
     if df_reference.empty:
+        logger.warning("No Snowflake reference data provided for optimization")
         st.warning("⚠️ No Snowflake reference data provided for optimization")
         return pd.DataFrame()
     try:
@@ -534,11 +552,13 @@ def build_optimized_1to1_question_bank(df_reference):
         grouped = df_reference.groupby('normalized_question')
         for norm_question, group in grouped:
             if not norm_question or len(norm_question.strip()) < 3:
+                logger.debug(f"Skipping invalid normalized question: {norm_question}")
                 continue
             uid_counts = group['UID'].value_counts()
             all_variants = group['HEADING_0'].unique()
             best_question = get_best_question_for_uid(all_variants)
             if not best_question:
+                logger.debug(f"No valid best question for normalized question: {norm_question}")
                 continue
             uid_conflicts = [
                 {'uid': uid, 'count': count, 'percentage': (count / len(group)) * 100}
@@ -554,7 +574,7 @@ def build_optimized_1to1_question_bank(df_reference):
             question_analysis.append({
                 'normalized_question': norm_question,
                 'best_question': best_question,
-                'uid': winner_uid,  # Fixed from winner_uid
+                'uid': winner_uid,
                 'winner_count': winner_count,
                 'total_occurrences': len(group),
                 'unique_uids_count': len(uid_counts),
@@ -691,15 +711,20 @@ def view_surveys():
                         details = get_survey_details(survey['id'], token)
                         questions = extract_questions_from_surveymonkey(details)
                         if not questions:
-                            st.warning("⚠️ No questions extracted from this survey")
+                            st.warning("⚠️ No questions extracted from this survey. Check SurveyMonkey data.")
                         else:
-                            df_questions = pd.DataFrame(questions)
-                            df_questions['choices'] = df_questions['choices'].apply(lambda x: ', '.join(x) if x else 'N/A')
-                            st.markdown("### Survey Questions")
-                            st.dataframe(df_questions[['question_id', 'question_text', 'choices', 'survey_title']])
-                            st.session_state.questions = questions
-                            st.session_state.page = "configure_survey"
-                            st.rerun()
+                            try:
+                                df_questions = pd.DataFrame(questions)
+                                df_questions['choices'] = df_questions['choices'].apply(lambda x: ', '.join(x) if x else 'N/A')
+                                st.markdown("### Survey Questions")
+                                st.dataframe(df_questions[['question_id', 'question_text', 'choices', 'survey_title']])
+                                st.session_state.questions = questions
+                                st.session_state.page = "configure_survey"
+                                if st.button("Proceed to Configure Survey"):
+                                    st.rerun()
+                            except Exception as e:
+                                logger.error(f"Failed to display survey questions: {e}")
+                                st.error(f"❌ Failed to display survey questions: {str(e)}")
         else:
             st.warning("⚠️ No SurveyMonkey token provided")
     except Exception as e:
@@ -716,14 +741,19 @@ def configure_survey():
     try:
         engine = get_snowflake_engine()
         st.session_state.snowflake_engine = engine
-    except Exception:
+    except Exception as e:
         sf_status = False
+        logger.error(f"Snowflake connection failed: {e}")
         st.warning("⚠️ Snowflake connection not established")
-    
+
     if 'questions' in st.session_state and st.session_state.questions:
         df_target = pd.DataFrame(st.session_state.questions)
         st.markdown("### 📋 Survey Questions")
-        st.dataframe(df_target[['survey_title', 'question_text', 'choices']] if 'choices' in df_target.columns else df_target[['survey_title', 'question_text']])
+        try:
+            st.dataframe(df_target[['survey_title', 'question_text', 'choices']] if 'choices' in df_target.columns else df_target[['survey_title', 'question_text']])
+        except Exception as e:
+            logger.error(f"Failed to display target questions: {e}")
+            st.error(f"❌ Failed to display questions: {str(e)}")
         
         if sf_status:
             st.markdown("### 🔄 UID Assignment Process")
@@ -777,8 +807,13 @@ def configure_survey():
             )
             
             if st.button("🚀 Run UID Matching", type="primary"):
+                matched_results = []
                 try:
                     df_reference = get_all_reference_questions_from_snowflake()
+                    if df_reference.empty:
+                        st.error("❌ No reference questions available from Snowflake")
+                        return
+                    
                     if matching_approach == "🎯 Ultra-Fast Matching (1:1 Optimized, Recommended)":
                         if opt_ref.empty:
                             st.error("❌ 1:1 optimization not built yet. Please build it first.")
@@ -797,7 +832,12 @@ def configure_survey():
                         with st.spinner("❌ Running standard semantic matching (slower)..."):
                             matched_results = perform_semantic_matching(df_target.to_dict('records'), df_reference)
                     
-                    if matched_results:
+                except Exception as e:
+                    logger.error(f"UID matching failed: {e}")
+                    st.error(f"❌ UID matching failed: {str(e)}")
+                
+                if matched_results:
+                    try:
                         matched_df = pd.DataFrame(matched_results)
                         st.session_state.df_final = matched_df
                         st.success(f"✅ UID matching completed!")
@@ -830,11 +870,11 @@ def configure_survey():
                                 if row.get('conflict_resolved', False):
                                     st.write(f"**UID Authority:** {row['uid_authority']} records{authority_info}")
                                     st.info("🔥 This question had multiple competing UIDs. Assigned to highest-count UID.")
-                    else:
-                        st.error("❌ No matching results generated")
-                except Exception as e:
-                    logger.error(f"UID matching failed: {e}")
-                    st.error(f"❌ UID matching failed: {str(e)}")
+                    except Exception as e:
+                        logger.error(f"Failed to process matching results: {e}")
+                        st.error(f"❌ Failed to process matching results: {str(e)}")
+                else:
+                    st.error("❌ No matching results generated")
         else:
             st.warning("❌ Snowflake connection required for UID assignment")
             st.info("Configure surveys is available, but UID matching requires Snowflake connection")
@@ -853,6 +893,7 @@ def build_question_bank():
         else:
             st.warning("⚠️ No reference questions loaded. Check Snowflake configuration.")
     except Exception as e:
+        logger.error(f"Failed to build question bank: {e}")
         st.error(f"❌ Failed to build question bank: {str(e)}")
 
 def optimized_question_bank():
@@ -869,6 +910,7 @@ def optimized_question_bank():
         else:
             st.warning("⚠️ No reference questions loaded. Check Snowflake configuration.")
     except Exception as e:
+        logger.error(f"Failed to build optimized question bank: {e}")
         st.error(f"❌ Failed to build optimized question bank: {str(e)}")
 
 def matching_dashboard():
