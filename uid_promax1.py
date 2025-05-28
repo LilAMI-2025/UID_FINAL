@@ -540,101 +540,31 @@ def get_survey_details(survey_id, token):
         return {}
 
 def extract_questions_from_surveymonkey(survey_data):
-    """Enhanced question extraction with question_id and choice details"""
+    """Extract questions from SurveyMonkey with minimal changes - just add question_id"""
     try:
         questions = []
         if not survey_data or 'pages' not in survey_data:
             logger.warning("No pages found in survey data")
             return questions
         
-        global_position = 0
-        survey_title = survey_data.get('title', 'Unknown Survey')
-        survey_id = survey_data.get('id', '')
-        
-        for page_idx, page in enumerate(survey_data.get('pages', [])):
+        for page in survey_data.get('pages', []):
             if 'questions' not in page:
                 continue
-                
             for question in page.get('questions', []):
-                if 'headings' not in question or not question['headings']:
-                    continue
-                
-                question_text = question['headings'][0].get('heading', '').strip()
-                if not question_text:
-                    continue
-                
-                global_position += 1
-                question_id = question.get('id', f'q_{global_position}')
-                family = question.get('family', 'unknown')
-                subtype = question.get('subtype', 'unknown')
-                
-                # Determine schema type
-                if family == "single_choice":
-                    schema_type = "Single Choice"
-                elif family == "multiple_choice":
-                    schema_type = "Multiple Choice"
-                elif family == "open_ended":
-                    schema_type = "Open-Ended"
-                elif family == "matrix":
-                    schema_type = "Matrix"
-                else:
-                    schema_type = "Other"
-                
-                # Extract choices
-                choices = []
-                if 'answers' in question and 'choices' in question['answers']:
-                    for choice in question['answers']['choices']:
-                        choice_text = choice.get('text', '').strip()
-                        if choice_text:
-                            choices.append({
-                                'choice_id': choice.get('id', ''),
-                                'choice_text': choice_text,
-                                'position': choice.get('position', 0)
-                            })
-                
-                # Add main question
-                questions.append({
-                    'question_id': question_id,
-                    'question_text': question_text,
-                    'survey_id': survey_id,
-                    'survey_title': survey_title,
-                    'position': global_position,
-                    'page_number': page_idx + 1,
-                    'schema_type': schema_type,
-                    'family': family,
-                    'subtype': subtype,
-                    'is_choice': False,
-                    'parent_question': None,
-                    'choices': choices,
-                    'choice_count': len(choices),
-                    'is_required': question.get('required', {}).get('value', False)
-                })
-                
-                # Add individual choices as separate records
-                for choice in choices:
-                    questions.append({
-                        'question_id': question_id,
-                        'question_text': f"{question_text} - {choice['choice_text']}",
-                        'survey_id': survey_id,
-                        'survey_title': survey_title,
-                        'position': global_position,
-                        'page_number': page_idx + 1,
-                        'schema_type': schema_type,
-                        'family': family,
-                        'subtype': subtype,
-                        'is_choice': True,
-                        'parent_question': question_text,
-                        'choice_id': choice['choice_id'],
-                        'choice_text': choice['choice_text'],
-                        'choice_position': choice['position'],
-                        'choices': [],
-                        'choice_count': 0,
-                        'is_required': False
-                    })
-        
-        logger.info(f"Extracted {len(questions)} questions/choices from survey")
+                if 'headings' in question and question['headings']:
+                    question_text = question['headings'][0].get('heading', '')
+                    if question_text.strip():
+                        choices = []
+                        if 'answers' in question and 'choices' in question['answers']:
+                            choices = [choice.get('text', '') for choice in question['answers']['choices'] if choice.get('text')]
+                        questions.append({
+                            'question_id': question.get('id', ''),  # Only addition - question_id
+                            'question_text': question_text,
+                            'survey_title': survey_data.get('title', ''),
+                            'choices': choices
+                        })
+        logger.info(f"Extracted {len(questions)} questions from survey")
         return questions
-        
     except Exception as e:
         logger.error(f"Error extracting SurveyMonkey questions: {e}")
         st.error(f"❌ Failed to extract questions: {str(e)}")
@@ -656,9 +586,6 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
         return []
     
     try:
-        # Use session state threshold if available, otherwise use default
-        threshold = st.session_state.get('semantic_threshold', SEMANTIC_THRESHOLD)
-        
         if use_optimized_reference:
             optimized_ref = st.session_state.get('primary_matching_reference')
             if optimized_ref is None or optimized_ref.empty:
@@ -695,7 +622,7 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
             
             result = sm_question.copy()
             
-            if best_score >= threshold:  # Use session state threshold
+            if best_score >= SEMANTIC_THRESHOLD:
                 matched_row = optimized_ref.iloc[best_match_idx]
                 
                 if use_optimized_reference:
