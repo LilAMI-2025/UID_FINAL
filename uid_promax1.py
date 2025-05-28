@@ -290,25 +290,18 @@ def get_snowflake_engine():
 # Enhanced Snowflake Query Functions
 @st.cache_data(ttl=600)
 def get_all_reference_questions_from_snowflake():
-    """Fetch ALL reference questions from Snowflake with enhanced query."""
+    """Fetch ALL reference questions from Snowflake - using working query"""
     all_data = []
     limit = 10000
     offset = 0
     
-    # Enhanced query to get more metadata
+    # Use the working query from original script
     query = """
-    SELECT 
-        HEADING_0, 
-        UID, 
-        TITLE,
-        COUNT(*) as OCCURRENCE_COUNT,
-        MIN(CREATED_DATE) as FIRST_SEEN,
-        MAX(CREATED_DATE) as LAST_SEEN
+    SELECT HEADING_0, MAX(UID) AS UID
     FROM AMI_DBT.DBT_SURVEY_MONKEY.SURVEY_DETAILS_RESPONSES_COMBINED_LIVE
-    WHERE UID IS NOT NULL AND HEADING_0 IS NOT NULL 
-    AND TRIM(HEADING_0) != ''
-    GROUP BY HEADING_0, UID, TITLE
-    ORDER BY UID, OCCURRENCE_COUNT DESC
+    WHERE UID IS NOT NULL
+    GROUP BY HEADING_0
+    ORDER BY CAST(UID AS INTEGER) ASC
     LIMIT :limit OFFSET :offset
     """
     
@@ -337,11 +330,7 @@ def get_all_reference_questions_from_snowflake():
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         # Ensure proper column naming
-        expected_columns = ['HEADING_0', 'UID', 'TITLE', 'OCCURRENCE_COUNT', 'FIRST_SEEN', 'LAST_SEEN']
-        if len(final_df.columns) >= 3:
-            # Map columns to expected format
-            final_df.columns = expected_columns[:len(final_df.columns)]
-        
+        final_df.columns = ['heading_0', 'uid']
         logger.info(f"Total reference questions fetched from Snowflake: {len(final_df)}")
         return final_df
     else:
@@ -539,34 +528,65 @@ def get_survey_details(survey_id, token):
         st.error(f"❌ Failed to fetch survey details for ID {survey_id}: {str(e)}")
         return {}
 
-def extract_questions_from_surveymonkey(survey_data):
-    try:
-        questions = []
-        if not survey_data or 'pages' not in survey_data:
-            logger.warning("No pages found in survey data")
-            return questions
-        for page in survey_data.get('pages', []):
-            if 'questions' not in page:
-                continue
-            for question in page.get('questions', []):
-                if 'headings' in question and question['headings']:
-                    question_text = question['headings'][0].get('heading', '')
-                    if question_text.strip():
-                        choices = []
-                        if 'answers' in question and 'choices' in question['answers']:
-                            choices = [choice.get('text', '') for choice in question['answers']['choices'] if choice.get('text')]
+def extract_questions(survey_json):
+    """Use the working extract_questions function with minimal question_id addition"""
+    questions = []
+    global_position = 0
+    for page in survey_json.get("pages", []):
+        for question in page.get("questions", []):
+            q_text = question.get("headings", [{}])[0].get("heading", "")
+            q_id = question.get("id", None)
+            family = question.get("family", None)
+            subtype = question.get("subtype", None)
+            if family == "single_choice":
+                schema_type = "Single Choice"
+            elif family == "multiple_choice":
+                schema_type = "Multiple Choice"
+            elif family == "open_ended":
+                schema_type = "Open-Ended"
+            elif family == "matrix":
+                schema_type = "Matrix"
+            else:
+                choices = question.get("answers", {}).get("choices", [])
+                schema_type = "Multiple Choice" if choices else "Open-Ended"
+                if choices and ("select one" in q_text.lower() or len(choices) <= 2):
+                    schema_type = "Single Choice"
+            
+            question_category = classify_question(q_text)
+            
+            if q_text:
+                global_position += 1
+                questions.append({
+                    "heading_0": q_text,
+                    "position": global_position,
+                    "is_choice": False,
+                    "parent_question": None,
+                    "question_uid": q_id,  # This is the question_id from SurveyMonkey
+                    "schema_type": schema_type,
+                    "mandatory": False,
+                    "mandatory_editable": True,
+                    "survey_id": survey_json.get("id", ""),
+                    "survey_title": survey_json.get("title", ""),
+                    "question_category": question_category
+                })
+                choices = question.get("answers", {}).get("choices", [])
+                for choice in choices:
+                    choice_text = choice.get("text", "")
+                    if choice_text:
                         questions.append({
-                            'question_id': question.get('id', ''),
-                            'question_text': question_text,
-                            'survey_title': survey_data.get('title', ''),
-                            'choices': choices
+                            "heading_0": f"{q_text} - {choice_text}",
+                            "position": global_position,
+                            "is_choice": True,
+                            "parent_question": q_text,
+                            "question_uid": q_id,  # Same question_id for choices
+                            "schema_type": schema_type,
+                            "mandatory": False,
+                            "mandatory_editable": False,
+                            "survey_id": survey_json.get("id", ""),
+                            "survey_title": survey_json.get("title", ""),
+                            "question_category": "Main Question/Multiple Choice"
                         })
-        logger.info(f"Extracted {len(questions)} questions from survey")
-        return questions
-    except Exception as e:
-        logger.error(f"Error extracting SurveyMonkey questions: {e}")
-        st.error(f"❌ Failed to extract questions: {str(e)}")
-        return []
+    return questions
 
 # Enhanced Matching Functions
 def load_sentence_transformer():
@@ -587,24 +607,42 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
         if use_optimized_reference:
             optimized_ref = st.session_state.get('primary_matching_reference')
             if optimized_ref is None or optimized_ref.empty:
-                logger.warning("Optimized reference not available, building now...")
+                logger.warning("Optimized reference not available, using standard reference...")
                 df_reference = get_all_reference_questions_from_snowflake()
                 if not df_reference.empty:
-                    optimized_ref, _ = build_optimized_1to1_question_bank(df_reference)
+                    # For now, use standard reference until optimization is built
+                    ref_texts = df_reference['heading_0'].tolist()
+                    optimized_ref = df_reference
+                    use_optimized_reference = False
                 else:
                     st.error("❌ No reference data available for optimization")
                     return []
-            
-            ref_texts = optimized_ref['best_question'].tolist()
-            logger.info(f"Using optimized reference with {len(optimized_ref)} unique questions")
+            else:
+                ref_texts = optimized_ref['best_question'].tolist()
+                logger.info(f"Using optimized reference with {len(optimized_ref)} unique questions")
         else:
             df_reference = get_all_reference_questions_from_snowflake()
-            ref_texts = df_reference['HEADING_0'].tolist()
+            ref_texts = df_reference['heading_0'].tolist()
             optimized_ref = df_reference
         
-        # Perform semantic matching
+        # Perform semantic matching - handle both data formats
         model = load_sentence_transformer()
-        sm_texts = [q['question_text'] for q in surveymonkey_questions]
+        
+        # Extract question texts - handle both DataFrame and list formats
+        if isinstance(surveymonkey_questions, pd.DataFrame):
+            sm_texts = surveymonkey_questions['heading_0'].tolist()
+        elif isinstance(surveymonkey_questions, list):
+            if len(surveymonkey_questions) > 0 and isinstance(surveymonkey_questions[0], dict):
+                # Handle both 'question_text' and 'heading_0' keys
+                if 'question_text' in surveymonkey_questions[0]:
+                    sm_texts = [q['question_text'] for q in surveymonkey_questions]
+                else:
+                    sm_texts = [q.get('heading_0', '') for q in surveymonkey_questions]
+            else:
+                sm_texts = surveymonkey_questions
+        else:
+            st.error("❌ Invalid surveymonkey_questions format")
+            return []
         
         logger.info(f"Encoding {len(sm_texts)} SurveyMonkey questions against {len(ref_texts)} reference")
         
@@ -614,16 +652,20 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
         
         matched_results = []
         
-        for i, sm_question in enumerate(surveymonkey_questions):
+        # Handle different input formats
+        for i, sm_question in enumerate(surveymonkey_questions if isinstance(surveymonkey_questions, list) else surveymonkey_questions.to_dict('records')):
             best_match_idx = similarities[i].argmax().item()
             best_score = similarities[i][best_match_idx].item()
             
-            result = sm_question.copy()
+            if isinstance(sm_question, dict):
+                result = sm_question.copy()
+            else:
+                result = {'heading_0': sm_texts[i]}
             
             if best_score >= SEMANTIC_THRESHOLD:
                 matched_row = optimized_ref.iloc[best_match_idx]
                 
-                if use_optimized_reference:
+                if use_optimized_reference and 'best_question' in matched_row:
                     result['matched_uid'] = matched_row['uid']
                     result['matched_heading_0'] = matched_row['best_question']
                     result['conflict_resolved'] = matched_row.get('has_conflicts', False)
@@ -631,12 +673,12 @@ def ultra_fast_semantic_matching(surveymonkey_questions, use_optimized_reference
                     result['conflict_severity'] = matched_row.get('conflict_severity', 0)
                     result['quality_score'] = matched_row.get('quality_score', 0)
                 else:
-                    result['matched_uid'] = matched_row['UID']
-                    result['matched_heading_0'] = matched_row['HEADING_0']
+                    result['matched_uid'] = matched_row['uid']
+                    result['matched_heading_0'] = matched_row['heading_0']
                     result['conflict_resolved'] = False
-                    result['uid_authority'] = matched_row.get('OCCURRENCE_COUNT', 0)
+                    result['uid_authority'] = 0
                     result['conflict_severity'] = 0
-                    result['quality_score'] = score_question_quality(matched_row['HEADING_0'])
+                    result['quality_score'] = score_question_quality(matched_row['heading_0'])
                 
                 result['match_score'] = best_score
                 result['match_confidence'] = "High" if best_score >= 0.8 else "Medium"
@@ -919,7 +961,7 @@ def view_surveys():
                     
                     if st.button("📋 Extract Questions & Configure"):
                         details = get_survey_details(survey['id'], token)
-                        questions = extract_questions_from_surveymonkey(details)
+                        questions = extract_questions(details)  # Use the working function
                         
                         if not questions:
                             st.warning("⚠️ No questions extracted from this survey")
@@ -955,9 +997,19 @@ def configure_survey():
         
         st.markdown("### 📋 Survey Questions with IDs")
         
-        # Display enhanced question information
-        display_columns = ['question_id', 'question_text', 'schema_type', 'is_choice', 'choice_count']
+        # Display enhanced question information using correct column names
+        display_columns = ['question_uid', 'heading_0', 'schema_type', 'is_choice']
         if not df_target.empty:
+            # Add choice count for display
+            if 'choices' in df_target.columns:
+                df_target['choice_count'] = df_target['choices'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+                display_columns.append('choice_count')
+            else:
+                # Count choices for each question
+                choice_counts = df_target[df_target['is_choice'] == True].groupby('question_uid').size()
+                df_target['choice_count'] = df_target['question_uid'].map(choice_counts).fillna(0).astype(int)
+                display_columns.append('choice_count')
+            
             st.dataframe(df_target[display_columns], use_container_width=True, height=400)
         
         if sf_status:
