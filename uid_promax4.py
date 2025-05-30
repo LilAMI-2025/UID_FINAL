@@ -220,8 +220,20 @@ def categorize_survey_by_title(title):
     
     return "Uncategorized"
 
-def get_unique_questions_by_category(all_questions_df):
-    """Extract unique questions per category from survey data"""
+def get_unique_questions_by_category():
+    """Extract unique questions per category from ALL cached survey data - independent of selection"""
+    # Load all available questions from cache or fetch
+    if st.session_state.all_questions is None or st.session_state.all_questions.empty:
+        # Try to load from cache first
+        cached_questions, cached_dedup_questions, cached_dedup_choices = load_cached_survey_data()
+        if cached_questions is not None and not cached_questions.empty:
+            st.session_state.all_questions = cached_questions
+            st.session_state.dedup_questions = cached_dedup_questions
+            st.session_state.dedup_choices = cached_dedup_choices
+            st.session_state.fetched_survey_ids = cached_questions["survey_id"].unique().tolist()
+    
+    all_questions_df = st.session_state.all_questions
+    
     if all_questions_df is None or all_questions_df.empty:
         return pd.DataFrame()
     
@@ -412,13 +424,14 @@ def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
         return ""
 
 def score_question_quality(question):
-    """Enhanced question quality scoring"""
+    """Enhanced question quality scoring with English structure preference"""
     try:
         if not isinstance(question, str) or len(question.strip()) < 5:
             return 0
         
         score = 0
         text = question.lower().strip()
+        original_text = question.strip()
         
         # Length scoring (optimal range 10-100 characters)
         length = len(question)
@@ -429,19 +442,30 @@ def score_question_quality(question):
         elif length < 5:
             score -= 25
         
-        # Question format scoring
-        if text.endswith('?'):
-            score += 20
+        # Question format scoring - PRIORITIZE proper English structure
+        if original_text.endswith('?'):
+            score += 30  # Increased weight for proper question format
         
         # English question words at the beginning
         question_words = ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should']
         first_three_words = text.split()[:3]
         if any(word in first_three_words for word in question_words):
-            score += 20
+            score += 25  # Increased weight for proper question structure
         
         # Proper capitalization
         if question and question[0].isupper():
-            score += 10
+            score += 15  # Increased weight for proper capitalization
+        
+        # Grammar and structure bonuses
+        if ' is ' in text or ' are ' in text:
+            score += 10  # Proper verb usage
+        
+        # Complete sentence structure
+        word_count = len(question.split())
+        if 3 <= word_count <= 15:
+            score += 20  # Increased weight for proper length
+        elif word_count < 3:
+            score -= 20
         
         # Avoid common artifacts and low-quality indicators
         bad_patterns = [
@@ -450,18 +474,15 @@ def score_question_quality(question):
             'contact us', 'submit', 'continue', '<div', '<span', 'html'
         ]
         if any(pattern in text for pattern in bad_patterns):
-            score -= 25
+            score -= 30
         
         # Avoid HTML content
         if '<' in question and '>' in question:
-            score -= 30
+            score -= 40
         
-        # Word count scoring
-        word_count = len(question.split())
-        if 3 <= word_count <= 15:
-            score += 15
-        elif word_count < 3:
-            score -= 15
+        # Bonus for well-formed questions
+        if original_text.endswith('?') and any(word in first_three_words for word in question_words):
+            score += 15  # Extra bonus for well-formed English questions
         
         return max(0, score)  # Ensure non-negative score
         
@@ -470,7 +491,7 @@ def score_question_quality(question):
         return 0
 
 def get_best_question_for_uid(variants):
-    """Select the best quality question from a list of variants"""
+    """Select the best quality question from a list of variants with enhanced English structure preference"""
     try:
         if not variants:
             return None
@@ -483,8 +504,17 @@ def get_best_question_for_uid(variants):
         # Score all variants
         scored_variants = [(v, score_question_quality(v)) for v in valid_variants]
         
-        # Sort by score (descending) and then by length (shorter is better for same score)
-        scored_variants.sort(key=lambda x: (-x[1], len(x[0])))
+        # Sort by score (descending), then by proper English structure, then by length
+        def sort_key(item):
+            question, score = item
+            # Prioritize questions with proper English structure
+            has_question_mark = question.strip().endswith('?')
+            has_question_word = any(question.lower().strip().startswith(word) for word in ['what', 'how', 'when', 'where', 'why', 'which', 'do', 'does', 'did', 'are', 'is', 'was', 'were', 'can', 'will', 'would', 'should'])
+            proper_structure_bonus = 1000 if (has_question_mark and has_question_word) else 0
+            
+            return (-score - proper_structure_bonus, len(question))
+        
+        scored_variants.sort(key=sort_key)
         
         return scored_variants[0][0]
     except Exception as e:
@@ -602,7 +632,7 @@ def calculate_matched_percentage(df_final):
     matched_questions = eligible_questions[eligible_questions["Final_UID"].notna()]
     return round((len(matched_questions) / len(eligible_questions)) * 100, 2)
 
-# Get configured surveys from Snowflake
+# Get configured surveys from Snowflake - UPDATED FUNCTION
 @st.cache_data(ttl=600)
 def get_configured_surveys_from_snowflake():
     """Get distinct survey IDs that are configured in Snowflake"""
@@ -621,18 +651,18 @@ def get_configured_surveys_from_snowflake():
         logger.error(f"Failed to get configured surveys: {e}")
         return []
 
-# Count configured surveys from cache
-def count_configured_surveys_from_cache():
-    """Count how many cached surveys are configured in Snowflake"""
+# Count configured surveys from SurveyMonkey surveys - UPDATED FUNCTION
+def count_configured_surveys_from_surveymonkey(surveys):
+    """Count how many SurveyMonkey surveys are configured in Snowflake"""
     try:
         # Get configured survey IDs from Snowflake
         configured_surveys = get_configured_surveys_from_snowflake()
         
-        # Get cached survey IDs (from fetched_survey_ids in session state)
-        cached_survey_ids = st.session_state.get('fetched_survey_ids', [])
+        # Get SurveyMonkey survey IDs
+        surveymonkey_survey_ids = [str(survey['id']) for survey in surveys]
         
         # Count intersection
-        configured_count = len([sid for sid in cached_survey_ids if sid in configured_surveys])
+        configured_count = len([sid for sid in surveymonkey_survey_ids if sid in configured_surveys])
         return configured_count
     except Exception as e:
         logger.error(f"Failed to count configured surveys: {e}")
@@ -725,7 +755,8 @@ def get_all_reference_questions_from_snowflake():
             except Exception as e2:
                 logger.error(f"Both enhanced and simple queries failed: {e2}")
                 return pd.DataFrame()
-              if all_data:
+    
+    if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         # Ensure proper column naming
         if 'occurrence_count' not in final_df.columns:
@@ -1414,9 +1445,9 @@ if st.session_state.page == "home":
     
     with col4:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        if sf_status:
+        if sf_status and surveys:
             try:
-                configured_count = count_configured_surveys_from_cache()
+                configured_count = count_configured_surveys_from_surveymonkey(surveys)
                 st.metric("🎯 Configured Surveys", f"{configured_count}")
             except:
                 st.metric("🎯 Configured Surveys", "Error")
@@ -1615,7 +1646,7 @@ elif st.session_state.page == "survey_selection":
 
 elif st.session_state.page == "survey_categorization":
     st.markdown("## 📊 Survey Categorization")
-    st.markdown('<div class="data-source-info">📂 <strong>Process:</strong> Filter by survey categories → Select question types → Assign UIDs</div>', unsafe_allow_html=True)
+    st.markdown('<div class="data-source-info">📂 <strong>Data Source:</strong> SurveyMonkey questions/choices - Independent categorization using cached survey data</div>', unsafe_allow_html=True)
     
     # Category overview
     st.markdown("### 📂 Survey Categories Overview")
@@ -1625,27 +1656,15 @@ elif st.session_state.page == "survey_categorization":
             st.markdown(f"**{category}:** {', '.join(keywords)}")
         st.markdown("**Uncategorized:** Surveys that don't match any category")
     
-    # Load all available questions from cache or fetch
-    if st.session_state.all_questions is None or st.session_state.all_questions.empty:
-        # Try to load from cache first
-        cached_questions, cached_dedup_questions, cached_dedup_choices = load_cached_survey_data()
-        if cached_questions is not None and not cached_questions.empty:
-            st.session_state.all_questions = cached_questions
-            st.session_state.dedup_questions = cached_dedup_questions
-            st.session_state.dedup_choices = cached_dedup_choices
-        else:
-            st.markdown('<div class="warning-card">⚠️ No survey data available in cache. Please fetch surveys from SurveyMonkey first.</div>', unsafe_allow_html=True)
-            if st.button("📋 Go to Survey Selection"):
-                st.session_state.page = "survey_selection"
-                st.rerun()
-            st.stop()
-    
-    # Generate categorized questions from all available data
-    with st.spinner("📊 Analyzing all survey categories..."):
-        categorized_df = get_unique_questions_by_category(st.session_state.all_questions)
+    # Generate categorized questions from ALL cached survey data - independent of selection
+    with st.spinner("📊 Analyzing all survey categories from cached data..."):
+        categorized_df = get_unique_questions_by_category()
     
     if categorized_df.empty:
-        st.markdown('<div class="warning-card">⚠️ No categorized questions found.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="warning-card">⚠️ No categorized questions found. Please fetch surveys from SurveyMonkey first.</div>', unsafe_allow_html=True)
+        if st.button("📋 Go to Survey Selection"):
+            st.session_state.page = "survey_selection"
+            st.rerun()
         st.stop()
     
     # Category metrics
@@ -1657,7 +1676,7 @@ elif st.session_state.page == "survey_categorization":
     }).rename(columns={'heading_0': 'question_count'}).reset_index()
     
     # Display metrics in columns
-    cols = st.columns(len(category_stats))
+    cols = st.columns(min(len(category_stats), 4))
     for idx, (_, row) in enumerate(category_stats.iterrows()):
         with cols[idx % len(cols)]:
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
@@ -1671,7 +1690,7 @@ elif st.session_state.page == "survey_categorization":
     # Category filter and display
     st.markdown("### 🔍 Questions by Survey Category")
     
-    # Filters - Survey category and question type
+    # Filters - Survey category and question type (ONLY these two filters as requested)
     col1, col2 = st.columns(2)
     with col1:
         survey_category_filter = st.multiselect(
@@ -1689,9 +1708,6 @@ elif st.session_state.page == "survey_categorization":
             key="cat_schema_filter"
         )
     
-    # Search
-    search_query = st.text_input("🔍 Search questions/choices:", key="cat_search")
-    
     # Apply filters
     filtered_df = categorized_df.copy()
     
@@ -1702,10 +1718,6 @@ elif st.session_state.page == "survey_categorization":
     # Filter by schema type
     if schema_filter:
         filtered_df = filtered_df[filtered_df['schema_type'].isin(schema_filter)]
-    
-    # Search filter
-    if search_query:
-        filtered_df = filtered_df[filtered_df['heading_0'].str.contains(search_query, case=False, na=False)]
     
     # UID Assignment Section
     if not filtered_df.empty:
@@ -2383,10 +2395,10 @@ with footer_col3:
     opt_count = len(opt_ref) if opt_ref is not None and not opt_ref.empty else 0
     st.write(f"Optimized: {opt_count:,}")
     
-    # Show configured surveys count
-    if sf_status:
+    # Show configured surveys count using the updated function
+    if sf_status and surveys:
         try:
-            configured_count = count_configured_surveys_from_cache()
+            configured_count = count_configured_surveys_from_surveymonkey(surveys)
             st.write(f"Configured: {configured_count}")
         except:
             st.write("Configured: Error")
