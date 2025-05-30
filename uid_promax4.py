@@ -220,6 +220,56 @@ def categorize_survey_by_title(title):
     
     return "Uncategorized"
 
+def clean_question_text(text):
+    """Clean question text by removing year specifications and extracting core question"""
+    if not isinstance(text, str):
+        return text
+    
+    # Remove year specifications like (i.e. 1 Jan. 2024 - 31 Dec. 2024)
+    text = re.sub(r'\(i\.e\.\s*\d{1,2}\s+\w+\.?\s+\d{4}\s*-\s*\d{1,2}\s+\w+\.?\s+\d{4}\)', '', text)
+    
+    # Remove other date patterns
+    text = re.sub(r'\(\d{1,2}\s+\w+\.?\s+\d{4}\s*-\s*\d{1,2}\s+\w+\.?\s+\d{4}\)', '', text)
+    
+    # For mobile number patterns, extract the main question part
+    if 'Your mobile number' in text and '<br>' in text:
+        # Extract "Your mobile number" part
+        parts = text.split('<br>')
+        if parts:
+            return parts[0].strip()
+    
+    # For questions with HTML formatting, extract the main question
+    if '<br>' in text:
+        parts = text.split('<br>')
+        # Take the first substantial part (not just formatting)
+        for part in parts:
+            clean_part = re.sub(r'<[^>]+>', '', part).strip()
+            if len(clean_part) > 10 and not clean_part.startswith('Country area'):
+                return clean_part
+    
+    # Clean up extra spaces and HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
+
+def normalize_question_for_grouping(text):
+    """Normalize question text for grouping similar questions"""
+    if not isinstance(text, str):
+        return text
+    
+    # Clean the text first
+    cleaned = clean_question_text(text)
+    
+    # Convert to lowercase for comparison
+    normalized = cleaned.lower().strip()
+    
+    # Remove common variations
+    normalized = re.sub(r'\s*-\s*', ' ', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized)
+    
+    return normalized
+
 def get_unique_questions_by_category():
     """Extract unique questions per category from ALL cached survey data - independent of selection"""
     # Load all available questions from cache or fetch
@@ -240,6 +290,10 @@ def get_unique_questions_by_category():
     # Add category column based on survey title
     all_questions_df['survey_category'] = all_questions_df['survey_title'].apply(categorize_survey_by_title)
     
+    # Clean and normalize question text
+    all_questions_df['cleaned_question_text'] = all_questions_df['question_text'].apply(clean_question_text)
+    all_questions_df['normalized_question'] = all_questions_df['cleaned_question_text'].apply(normalize_question_for_grouping)
+    
     # Group by category and get unique questions
     category_questions = []
     
@@ -247,34 +301,28 @@ def get_unique_questions_by_category():
         category_df = all_questions_df[all_questions_df['survey_category'] == category]
         
         if not category_df.empty:
-            # Get unique main questions (not choices)
-            unique_main_questions = category_df[
-                category_df['is_choice'] == False
-            ]['question_text'].unique()
+            # Get unique main questions (not choices) by normalized text
+            main_questions_df = category_df[category_df['is_choice'] == False]
+            unique_main_questions = main_questions_df.groupby('normalized_question').first()
             
-            # Get unique choices
-            unique_choices = category_df[
-                category_df['is_choice'] == True
-            ]['question_text'].unique()
+            # Get unique choices by normalized text
+            choices_df = category_df[category_df['is_choice'] == True]
+            unique_choices = choices_df.groupby('normalized_question').first()
             
             # Add main questions
-            for question in unique_main_questions:
-                question_data = category_df[
-                    (category_df['question_text'] == question) & 
-                    (category_df['is_choice'] == False)
-                ].iloc[0]
+            for _, question_data in unique_main_questions.iterrows():
+                # Count surveys for this normalized question
+                survey_count = len(main_questions_df[
+                    main_questions_df['normalized_question'] == question_data['normalized_question']
+                ]['survey_id'].unique())
                 
                 category_questions.append({
                     'survey_category': category,
-                    'question_uid': question_data.get('question_uid'),
-                    'question_text': question,
+                    'question_text': question_data['cleaned_question_text'],
                     'schema_type': question_data.get('schema_type'),
                     'is_choice': False,
                     'parent_question': None,
-                    'survey_count': len(category_df[
-                        (category_df['question_text'] == question) & 
-                        (category_df['is_choice'] == False)
-                    ]['survey_id'].unique()),
+                    'survey_count': survey_count,
                     'Final_UID': None,
                     'configured_final_UID': None,
                     'Change_UID': None,
@@ -282,22 +330,19 @@ def get_unique_questions_by_category():
                 })
             
             # Add choices
-            for choice in unique_choices:
-                choice_data = category_df[
-                    (category_df['question_text'] == choice) & 
-                    (category_df['is_choice'] == True)
-                ].iloc[0]
+            for _, choice_data in unique_choices.iterrows():
+                # Count surveys for this normalized choice
+                survey_count = len(choices_df[
+                    choices_df['normalized_question'] == choice_data['normalized_question']
+                ]['survey_id'].unique())
                 
                 category_questions.append({
                     'survey_category': category,
-                    'question_uid': choice_data.get('question_uid'),
-                    'question_text': choice,
+                    'question_text': choice_data['cleaned_question_text'],
                     'schema_type': choice_data.get('schema_type'),
                     'is_choice': True,
                     'parent_question': choice_data.get('parent_question'),
-                    'survey_count': len(category_df[
-                        category_df['question_text'] == choice
-                    ]['survey_id'].unique()),
+                    'survey_count': survey_count,
                     'Final_UID': None,
                     'configured_final_UID': None,
                     'Change_UID': None,
@@ -1669,6 +1714,16 @@ elif st.session_state.page == "survey_categorization":
             st.rerun()
         st.stop()
     
+    # Show data cleaning info
+    st.markdown("### 🧹 Data Cleaning Applied")
+    with st.expander("ℹ️ Question Text Cleaning Rules", expanded=False):
+        st.markdown("**Automatic cleaning applied to questions:**")
+        st.markdown("• Removed year specifications like `(i.e. 1 Jan. 2024 - 31 Dec. 2024)`")
+        st.markdown("• For mobile number questions: Extracted main question `Your mobile number`")
+        st.markdown("• Removed HTML formatting tags")
+        st.markdown("• Grouped similar questions together")
+        st.markdown("• **Example:** `Your mobile number <br>Country area code - +255 (Tanzania)` → `Your mobile number`")
+    
     # Category metrics
     st.markdown("### 📊 Category Metrics")
     
@@ -1730,9 +1785,9 @@ elif st.session_state.page == "survey_categorization":
         if st.session_state.question_bank is not None and not st.session_state.question_bank.empty:
             uid_options.extend([f"{row['UID']} - {row['HEADING_0']}" for _, row in st.session_state.question_bank.iterrows()])
         
-        # Display and edit questions
+        # Display and edit questions - REMOVED question_uid column
         display_columns = [
-            "survey_category", "question_uid", "question_text", "schema_type", 
+            "survey_category", "question_text", "schema_type", 
             "is_choice", "survey_count", "Final_UID", "Change_UID", "required"
         ]
         
@@ -1743,7 +1798,6 @@ elif st.session_state.page == "survey_categorization":
             filtered_df[available_columns],
             column_config={
                 "survey_category": st.column_config.TextColumn("Survey Category", width="medium"),
-                "question_uid": st.column_config.TextColumn("Question ID", width="medium"),
                 "question_text": st.column_config.TextColumn("Question/Choice", width="large"),
                 "schema_type": st.column_config.TextColumn("Type", width="medium"),
                 "is_choice": st.column_config.CheckboxColumn("Is Choice", width="small"),
@@ -1757,7 +1811,7 @@ elif st.session_state.page == "survey_categorization":
                 ),
                 "required": st.column_config.CheckboxColumn("Required", width="small")
             },
-            disabled=["survey_category", "question_uid", "question_text", "schema_type", "is_choice", "survey_count", "Final_UID"],
+            disabled=["survey_category", "question_text", "schema_type", "is_choice", "survey_count", "Final_UID"],
             hide_index=True,
             height=500,
             key="categorized_editor"
