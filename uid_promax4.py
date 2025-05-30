@@ -133,7 +133,7 @@ ENHANCED_SYNONYM_MAP = {
     "your role": "your position",
 }
 
-# Survey categorization keywords
+# Survey categorization keywords - BASED ON SURVEY TITLE FROM SURVEYMONKEY
 SURVEY_CATEGORIES = {
     "Application": ["application", "apply", "applying", "candidate", "candidacy", "admission"],
     "Pre programme": ["pre programme", "pre-programme", "pre program", "pre-program", "before programme", "preparation", "prep"],
@@ -250,30 +250,29 @@ def get_unique_questions_by_category():
             # Get unique main questions (not choices)
             unique_main_questions = category_df[
                 category_df['is_choice'] == False
-            ]['heading_0'].unique()
+            ]['question_text'].unique()
             
             # Get unique choices
             unique_choices = category_df[
                 category_df['is_choice'] == True
-            ]['heading_0'].unique()
+            ]['question_text'].unique()
             
             # Add main questions
             for question in unique_main_questions:
                 question_data = category_df[
-                    (category_df['heading_0'] == question) & 
+                    (category_df['question_text'] == question) & 
                     (category_df['is_choice'] == False)
                 ].iloc[0]
                 
                 category_questions.append({
                     'survey_category': category,
                     'question_uid': question_data.get('question_uid'),
-                    'heading_0': question,
+                    'question_text': question,
                     'schema_type': question_data.get('schema_type'),
                     'is_choice': False,
                     'parent_question': None,
-                    'question_category': question_data.get('question_category', 'Main Question/Multiple Choice'),
                     'survey_count': len(category_df[
-                        (category_df['heading_0'] == question) & 
+                        (category_df['question_text'] == question) & 
                         (category_df['is_choice'] == False)
                     ]['survey_id'].unique()),
                     'Final_UID': None,
@@ -285,20 +284,19 @@ def get_unique_questions_by_category():
             # Add choices
             for choice in unique_choices:
                 choice_data = category_df[
-                    (category_df['heading_0'] == choice) & 
+                    (category_df['question_text'] == choice) & 
                     (category_df['is_choice'] == True)
                 ].iloc[0]
                 
                 category_questions.append({
                     'survey_category': category,
                     'question_uid': choice_data.get('question_uid'),
-                    'heading_0': choice,
+                    'question_text': choice,
                     'schema_type': choice_data.get('schema_type'),
                     'is_choice': True,
                     'parent_question': choice_data.get('parent_question'),
-                    'question_category': 'Main Question/Multiple Choice',
                     'survey_count': len(category_df[
-                        category_df['heading_0'] == choice
+                        category_df['question_text'] == choice
                     ]['survey_id'].unique()),
                     'Final_UID': None,
                     'configured_final_UID': None,
@@ -424,7 +422,7 @@ def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
         return ""
 
 def score_question_quality(question):
-    """Enhanced question quality scoring with English structure preference"""
+    """Enhanced question quality scoring with English structure preference for SNOWFLAKE questions"""
     try:
         if not isinstance(question, str) or len(question.strip()) < 5:
             return 0
@@ -491,7 +489,7 @@ def score_question_quality(question):
         return 0
 
 def get_best_question_for_uid(variants):
-    """Select the best quality question from a list of variants with enhanced English structure preference"""
+    """Select the best quality question from a list of variants with enhanced English structure preference for SNOWFLAKE HEADING_0"""
     try:
         if not variants:
             return None
@@ -623,9 +621,9 @@ def calculate_matched_percentage(df_final):
     if df_final is None or df_final.empty:
         return 0.0
     df_main = df_final[df_final["is_choice"] == False].copy()
-    privacy_filter = ~df_main["heading_0"].str.contains("Our Privacy Policy", case=False, na=False)
+    privacy_filter = ~df_main["question_text"].str.contains("Our Privacy Policy", case=False, na=False)
     html_pattern = r"<div.*text-align:\s*center.*<span.*font-size:\s*12pt.*<em>If you have any questions, please contact your AMI Learner Success Manager.*</em>.*</span>.*</div>"
-    html_filter = ~df_main["heading_0"].str.contains(html_pattern, case=False, na=False, regex=True)
+    html_filter = ~df_main["question_text"].str.contains(html_pattern, case=False, na=False, regex=True)
     eligible_questions = df_main[privacy_filter & html_filter]
     if eligible_questions.empty:
         return 0.0
@@ -680,8 +678,9 @@ def run_snowflake_reference_query(limit=10000, offset=0):
     try:
         with get_snowflake_engine().connect() as conn:
             result = pd.read_sql(text(query), conn, params={"limit": limit, "offset": offset})
-        # Ensure consistent column naming
+        # Ensure consistent column naming - Snowflake columns are HEADING_0 and UID
         result.columns = result.columns.str.lower()
+        result = result.rename(columns={'heading_0': 'HEADING_0', 'uid': 'UID'})
         return result
     except Exception as e:
         logger.error(f"Snowflake reference query failed: {e}")
@@ -719,8 +718,8 @@ def get_all_reference_questions_from_snowflake():
             if result.empty:
                 break
                 
-            # Ensure consistent column naming
-            result.columns = result.columns.str.lower()
+            # Ensure consistent column naming - Snowflake returns HEADING_0, UID, OCCURRENCE_COUNT
+            result.columns = result.columns.str.upper()
             all_data.append(result)
             offset += limit
             
@@ -744,8 +743,8 @@ def get_all_reference_questions_from_snowflake():
                 with get_snowflake_engine().connect() as conn:
                     result = pd.read_sql(text(simple_query), conn, params={"limit": limit, "offset": offset})
                 # Ensure consistent column naming and add occurrence count
-                result.columns = result.columns.str.lower()
-                result['occurrence_count'] = 1
+                result.columns = result.columns.str.upper()
+                result['OCCURRENCE_COUNT'] = 1
                 if result.empty:
                     break
                 all_data.append(result)
@@ -759,8 +758,8 @@ def get_all_reference_questions_from_snowflake():
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         # Ensure proper column naming
-        if 'occurrence_count' not in final_df.columns:
-            final_df['occurrence_count'] = 1
+        if 'OCCURRENCE_COUNT' not in final_df.columns:
+            final_df['OCCURRENCE_COUNT'] = 1
         logger.info(f"Total reference questions fetched from Snowflake: {len(final_df)}")
         return final_df
     else:
@@ -819,7 +818,7 @@ def extract_questions(survey_json):
             if q_text:
                 global_position += 1
                 questions.append({
-                    "heading_0": q_text,
+                    "question_text": q_text,  # SurveyMonkey question text
                     "position": global_position,
                     "is_choice": False,
                     "parent_question": None,
@@ -836,7 +835,7 @@ def extract_questions(survey_json):
                     choice_text = choice.get("text", "")
                     if choice_text:
                         questions.append({
-                            "heading_0": f"{q_text} - {choice_text}",
+                            "question_text": f"{q_text} - {choice_text}",  # SurveyMonkey choice text
                             "position": global_position,
                             "is_choice": True,
                             "parent_question": q_text,
@@ -864,14 +863,14 @@ def build_optimized_1to1_question_bank(df_reference):
         # Group by UID first to find the best question per UID
         uid_question_analysis = []
         
-        grouped_by_uid = df_reference.groupby('uid')
+        grouped_by_uid = df_reference.groupby('UID')
         
         for uid, group in grouped_by_uid:
             if not uid:
                 continue
             
-            # Get all unique variants for this UID
-            all_variants = group['heading_0'].unique()
+            # Get all unique variants for this UID (from Snowflake HEADING_0)
+            all_variants = group['HEADING_0'].unique()
             
             # Choose the best English structured question
             best_question = get_best_question_for_uid(all_variants)
@@ -880,13 +879,13 @@ def build_optimized_1to1_question_bank(df_reference):
                 continue
             
             # Count occurrences for this UID
-            if 'occurrence_count' in group.columns:
-                total_occurrences = group['occurrence_count'].sum()
+            if 'OCCURRENCE_COUNT' in group.columns:
+                total_occurrences = group['OCCURRENCE_COUNT'].sum()
             else:
                 total_occurrences = len(group)
             
             uid_question_analysis.append({
-                'uid': uid,
+                'UID': uid,
                 'best_question': best_question,
                 'total_occurrences': total_occurrences,
                 'variants_count': len(all_variants),
@@ -912,14 +911,14 @@ def build_optimized_1to1_question_bank(df_reference):
                 continue
             
             # Count UIDs for this normalized question
-            uid_counts = group.groupby('uid')['total_occurrences'].sum().sort_values(ascending=False)
+            uid_counts = group.groupby('UID')['total_occurrences'].sum().sort_values(ascending=False)
             
             if len(uid_counts) == 0:
                 continue
             
             # Get the best question from the highest occurrence UID
             winner_uid = uid_counts.index[0]
-            winner_data = group[group['uid'] == winner_uid].iloc[0]
+            winner_data = group[group['UID'] == winner_uid].iloc[0]
             best_question = winner_data['best_question']
             
             # Analyze conflicts (when multiple UIDs have similar questions)
@@ -937,7 +936,7 @@ def build_optimized_1to1_question_bank(df_reference):
                 # Only consider as conflict if count is above threshold
                 if competitor_count >= UID_GOVERNANCE['conflict_resolution_threshold']:
                     conflicts.append({
-                        'uid': competitor_uid,
+                        'UID': competitor_uid,
                         'count': competitor_count,
                         'percentage': competitor_percentage,
                         'authority_difference': winner_percentage - competitor_percentage
@@ -951,7 +950,7 @@ def build_optimized_1to1_question_bank(df_reference):
             question_analysis.append({
                 'normalized_question': norm_question,
                 'best_question': best_question,
-                'uid': winner_uid,
+                'UID': winner_uid,
                 'winner_count': winner_count,
                 'winner_percentage': winner_percentage,
                 'total_occurrences': total_occurrences,
@@ -960,7 +959,7 @@ def build_optimized_1to1_question_bank(df_reference):
                 'conflict_count': len(conflicts),
                 'conflicts': conflicts,
                 'all_uid_counts': dict(uid_counts),
-                'variants_count': len(group['uid'].unique()),
+                'variants_count': len(group['UID'].unique()),
                 'quality_score': score_question_quality(best_question),
                 'conflict_severity': conflict_severity,
                 'has_high_conflicts': has_high_conflicts,
@@ -971,17 +970,17 @@ def build_optimized_1to1_question_bank(df_reference):
             if len(conflicts) > 0:
                 conflict_summary.append({
                     'question': best_question[:100] + "..." if len(best_question) > 100 else best_question,
-                    'winner_uid': winner_uid,
+                    'winner_UID': winner_uid,
                     'winner_count': winner_count,
                     'winner_percentage': winner_percentage,
                     'competing_uids': len(conflicts),
-                    'top_competitor_uid': conflicts[0]['uid'] if conflicts else None,
+                    'top_competitor_UID': conflicts[0]['UID'] if conflicts else None,
                     'top_competitor_count': conflicts[0]['count'] if conflicts else 0,
                     'top_competitor_percentage': conflicts[0]['percentage'] if conflicts else 0,
                     'authority_difference': conflicts[0]['authority_difference'] if conflicts else 100,
                     'conflict_severity': conflict_severity,
                     'is_high_conflict': has_high_conflicts,
-                    'total_variants': len(group['uid'].unique())
+                    'total_variants': len(group['UID'].unique())
                 })
         
         # Create DataFrames
@@ -995,8 +994,8 @@ def build_optimized_1to1_question_bank(df_reference):
             # Store in session state
             st.session_state.primary_matching_reference = optimized_df
             st.session_state.uid_conflicts_summary = conflicts_df
-            st.session_state.optimized_question_bank = optimized_df[['uid', 'best_question', 'winner_count', 'quality_score']].rename(columns={
-                'uid': 'UID',
+            st.session_state.optimized_question_bank = optimized_df[['UID', 'best_question', 'winner_count', 'quality_score']].rename(columns={
+                'UID': 'UID',
                 'best_question': 'Question',
                 'winner_count': 'Authority_Count',
                 'quality_score': 'Quality_Score'
@@ -1011,12 +1010,13 @@ def build_optimized_1to1_question_bank(df_reference):
         st.error(f"❌ Failed to build optimized question bank: {str(e)}")
         return pd.DataFrame(), pd.DataFrame()
 
-# UID Matching Functions (keeping all original logic)
+# UID Matching Functions (keeping all original logic but fixing column names)
 def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_MAP):
-    df_reference = df_reference[df_reference["heading_0"].notna()].reset_index(drop=True)
-    df_target = df_target[df_target["heading_0"].notna()].reset_index(drop=True)
-    df_reference["norm_text"] = df_reference["heading_0"].apply(enhanced_normalize)
-    df_target["norm_text"] = df_target["heading_0"].apply(enhanced_normalize)
+    # df_reference has HEADING_0 (Snowflake), df_target has question_text (SurveyMonkey)
+    df_reference = df_reference[df_reference["HEADING_0"].notna()].reset_index(drop=True)
+    df_target = df_target[df_target["question_text"].notna()].reset_index(drop=True)
+    df_reference["norm_text"] = df_reference["HEADING_0"].apply(enhanced_normalize)
+    df_target["norm_text"] = df_target["question_text"].apply(enhanced_normalize)
 
     vectorizer, ref_vectors = get_tfidf_vectors(df_reference)
     target_vectors = vectorizer.transform(df_target["norm_text"])
@@ -1033,8 +1033,8 @@ def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_
         else:
             conf = "❌ No match"
             best_idx = None
-        matched_uids.append(df_reference.iloc[best_idx]["uid"] if best_idx is not None else None)
-        matched_qs.append(df_reference.iloc[best_idx]["heading_0"] if best_idx is not None else None)
+        matched_uids.append(df_reference.iloc[best_idx]["UID"] if best_idx is not None else None)
+        matched_qs.append(df_reference.iloc[best_idx]["HEADING_0"] if best_idx is not None else None)
         scores.append(round(best_score, 4))
         confs.append(conf)
 
@@ -1046,15 +1046,16 @@ def compute_tfidf_matches(df_reference, df_target, synonym_map=ENHANCED_SYNONYM_
 
 def compute_semantic_matches(df_reference, df_target):
     model = load_sentence_transformer()
-    emb_target = model.encode(df_target["heading_0"].tolist(), convert_to_tensor=True)
-    emb_ref = model.encode(df_reference["heading_0"].tolist(), convert_to_tensor=True)
+    # df_target has question_text, df_reference has HEADING_0
+    emb_target = model.encode(df_target["question_text"].tolist(), convert_to_tensor=True)
+    emb_ref = model.encode(df_reference["HEADING_0"].tolist(), convert_to_tensor=True)
     cosine_scores = util.cos_sim(emb_target, emb_ref)
 
     sem_matches, sem_scores = [], []
     for i in range(len(df_target)):
         best_idx = cosine_scores[i].argmax().item()
         score = cosine_scores[i][best_idx].item()
-        sem_matches.append(df_reference.iloc[best_idx]["uid"] if score >= SEMANTIC_THRESHOLD else None)
+        sem_matches.append(df_reference.iloc[best_idx]["UID"] if score >= SEMANTIC_THRESHOLD else None)
         sem_scores.append(round(score, 4) if score >= SEMANTIC_THRESHOLD else None)
 
     df_target["Semantic_UID"] = sem_matches
@@ -1077,23 +1078,23 @@ def finalize_matches(df_target, df_reference):
         df_target.loc[df_target["question_category"] == "Heading", ["Final_UID", "configured_final_UID"]] = None
     
     df_target["Change_UID"] = df_target["Final_UID"].apply(
-        lambda x: f"{x} - {df_reference[df_reference['uid'] == x]['heading_0'].iloc[0]}" if pd.notnull(x) and x in df_reference["uid"].values else None
+        lambda x: f"{x} - {df_reference[df_reference['UID'] == x]['HEADING_0'].iloc[0]}" if pd.notnull(x) and x in df_reference["UID"].values else None
     )
     
     df_target["Final_UID"] = df_target.apply(
-        lambda row: df_target[df_target["heading_0"] == row["parent_question"]]["Final_UID"].iloc[0]
+        lambda row: df_target[df_target["question_text"] == row["parent_question"]]["Final_UID"].iloc[0]
         if row["is_choice"] and pd.notnull(row["parent_question"]) else row["Final_UID"],
         axis=1
     )
     df_target["configured_final_UID"] = df_target["Final_UID"]
     df_target["Change_UID"] = df_target["Final_UID"].apply(
-        lambda x: f"{x} - {df_reference[df_reference['uid'] == x]['heading_0'].iloc[0]}" if pd.notnull(x) and x in df_reference["uid"].values else None
+        lambda x: f"{x} - {df_reference[df_reference['UID'] == x]['HEADING_0'].iloc[0]}" if pd.notnull(x) and x in df_reference["UID"].values else None
     )
     
     return df_target
 
 def detect_uid_conflicts(df_target):
-    uid_conflicts = df_target.groupby("Final_UID")["heading_0"].nunique()
+    uid_conflicts = df_target.groupby("Final_UID")["question_text"].nunique()
     duplicate_uids = uid_conflicts[uid_conflicts > 1].index
     df_target["UID_Conflict"] = df_target["Final_UID"].apply(
         lambda x: "⚠️ Conflict" if pd.notnull(x) and x in duplicate_uids else ""
@@ -1143,23 +1144,23 @@ def prepare_export_data(matched_results):
             
             if not main_questions_df.empty:
                 export_df['Main_Question_UID'] = export_df.apply(
-                    lambda row: main_questions_df[main_questions_df['heading_0'] == row['parent_question']]['Final_UID'].iloc[0]
+                    lambda row: main_questions_df[main_questions_df['question_text'] == row['parent_question']]['Final_UID'].iloc[0]
                     if row['is_choice'] and pd.notnull(row.get('parent_question')) and 
-                       not main_questions_df[main_questions_df['heading_0'] == row['parent_question']].empty
+                       not main_questions_df[main_questions_df['question_text'] == row['parent_question']].empty
                     else row.get('Final_UID'),
                     axis=1
                 )
                 
                 export_df['Main_Question_Position'] = export_df.apply(
-                    lambda row: main_questions_df[main_questions_df['heading_0'] == row['parent_question']]['position'].iloc[0]
+                    lambda row: main_questions_df[main_questions_df['question_text'] == row['parent_question']]['position'].iloc[0]
                     if row['is_choice'] and pd.notnull(row.get('parent_question')) and 
-                       not main_questions_df[main_questions_df['heading_0'] == row['parent_question']].empty
+                       not main_questions_df[main_questions_df['question_text'] == row['parent_question']].empty
                     else row.get('position'),
                     axis=1
                 )
         
         # Classify questions/choices based on identity content
-        export_df['has_identity_info'] = export_df['heading_0'].apply(contains_identity_info)
+        export_df['has_identity_info'] = export_df['question_text'].apply(contains_identity_info)
         
         # Table 1: Non-identity questions/choices (Format like Image 1)
         non_identity_df = export_df[export_df['has_identity_info'] == False].copy()
@@ -1207,7 +1208,7 @@ def prepare_export_data(matched_results):
         
         # Determine IDENTITY_TYPE based on question content
         if not identity_df.empty:
-            identity_df['IDENTITY_TYPE'] = identity_df['heading_0'].apply(determine_identity_type)
+            identity_df['IDENTITY_TYPE'] = identity_df['question_text'].apply(determine_identity_type)
             table2_columns.append('IDENTITY_TYPE')
         
         # Select available columns for Table 2
@@ -1327,6 +1328,7 @@ with st.sidebar:
         st.markdown("**SurveyMonkey (Source):**")
         st.markdown("• Survey data and questions")
         st.markdown("• question_uid → SurveyMonkey question ID")
+        st.markdown("• question_text → SurveyMonkey question/choice text")
         st.markdown("**Snowflake (Reference):**")
         st.markdown("• HEADING_0 → reference questions")
         st.markdown("• UID → target assignment")
@@ -1410,7 +1412,7 @@ try:
             st.session_state.question_bank = run_snowflake_reference_query()
         except Exception:
             st.warning("Failed to load question bank. Standardization checks disabled.")
-            st.session_state.question_bank = pd.DataFrame(columns=["heading_0", "uid"])
+            st.session_state.question_bank = pd.DataFrame(columns=["HEADING_0", "UID"])
 
 except Exception as e:
     st.error(f"SurveyMonkey initialization failed: {e}")
@@ -1432,7 +1434,7 @@ if st.session_state.page == "home":
     with col2:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
         if sf_status and st.session_state.question_bank is not None and not st.session_state.question_bank.empty:
-            unique_uids = st.session_state.question_bank["uid"].nunique()
+            unique_uids = st.session_state.question_bank["UID"].nunique()
             st.metric("❄️ Snowflake UIDs", f"{unique_uids:,}")
         else:
             st.metric("❄️ Snowflake UIDs", "No Connection")
@@ -1576,10 +1578,10 @@ elif st.session_state.page == "survey_selection":
             
             st.session_state.dedup_questions = sorted(st.session_state.all_questions[
                 st.session_state.all_questions["is_choice"] == False
-            ]["heading_0"].unique().tolist())
+            ]["question_text"].unique().tolist())
             st.session_state.dedup_choices = sorted(st.session_state.all_questions[
                 st.session_state.all_questions["is_choice"] == True
-            ]["heading_0"].apply(lambda x: x.split(" - ", 1)[1] if " - " in x else x).unique().tolist())
+            ]["question_text"].apply(lambda x: x.split(" - ", 1)[1] if " - " in x else x).unique().tolist())
             
             save_cached_survey_data(
                 st.session_state.all_questions,
@@ -1614,7 +1616,7 @@ elif st.session_state.page == "survey_selection":
                 display_df = st.session_state.df_target[st.session_state.df_target["is_choice"] == False] if show_main_only else st.session_state.df_target
                 
                 # Show questions with question_uid (question_id)
-                display_columns = ["question_uid", "heading_0", "schema_type", "is_choice", "survey_title"]
+                display_columns = ["question_uid", "question_text", "schema_type", "is_choice", "survey_title"]
                 available_columns = [col for col in display_columns if col in display_df.columns]
                 st.dataframe(display_df[available_columns], height=400)
                 
@@ -1671,9 +1673,9 @@ elif st.session_state.page == "survey_categorization":
     st.markdown("### 📊 Category Metrics")
     
     category_stats = categorized_df.groupby('survey_category').agg({
-        'heading_0': 'count',
+        'question_text': 'count',
         'survey_count': 'sum'
-    }).rename(columns={'heading_0': 'question_count'}).reset_index()
+    }).rename(columns={'question_text': 'question_count'}).reset_index()
     
     # Display metrics in columns
     cols = st.columns(min(len(category_stats), 4))
@@ -1726,11 +1728,11 @@ elif st.session_state.page == "survey_categorization":
         # Prepare UID options
         uid_options = [None]
         if st.session_state.question_bank is not None and not st.session_state.question_bank.empty:
-            uid_options.extend([f"{row['uid']} - {row['heading_0']}" for _, row in st.session_state.question_bank.iterrows()])
+            uid_options.extend([f"{row['UID']} - {row['HEADING_0']}" for _, row in st.session_state.question_bank.iterrows()])
         
         # Display and edit questions
         display_columns = [
-            "survey_category", "question_uid", "heading_0", "schema_type", 
+            "survey_category", "question_uid", "question_text", "schema_type", 
             "is_choice", "survey_count", "Final_UID", "Change_UID", "required"
         ]
         
@@ -1742,7 +1744,7 @@ elif st.session_state.page == "survey_categorization":
             column_config={
                 "survey_category": st.column_config.TextColumn("Survey Category", width="medium"),
                 "question_uid": st.column_config.TextColumn("Question ID", width="medium"),
-                "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+                "question_text": st.column_config.TextColumn("Question/Choice", width="large"),
                 "schema_type": st.column_config.TextColumn("Type", width="medium"),
                 "is_choice": st.column_config.CheckboxColumn("Is Choice", width="small"),
                 "survey_count": st.column_config.NumberColumn("Survey Count", width="small"),
@@ -1755,7 +1757,7 @@ elif st.session_state.page == "survey_categorization":
                 ),
                 "required": st.column_config.CheckboxColumn("Required", width="small")
             },
-            disabled=["survey_category", "question_uid", "heading_0", "schema_type", "is_choice", "survey_count", "Final_UID"],
+            disabled=["survey_category", "question_uid", "question_text", "schema_type", "is_choice", "survey_count", "Final_UID"],
             hide_index=True,
             height=500,
             key="categorized_editor"
@@ -1809,10 +1811,10 @@ elif st.session_state.page == "survey_categorization":
         st.markdown("### 📊 Assignment Summary by Survey Category")
         
         assignment_summary = categorized_df.groupby('survey_category').agg({
-            'heading_0': 'count',
+            'question_text': 'count',
             'Final_UID': lambda x: x.notna().sum()
         }).rename(columns={
-            'heading_0': 'Total Questions',
+            'question_text': 'Total Questions',
             'Final_UID': 'Assigned UIDs'
         })
         assignment_summary['Assignment Rate %'] = (
@@ -1940,7 +1942,7 @@ elif st.session_state.page == "uid_matching":
         # Apply filters
         result_df = st.session_state.df_final.copy()
         if search_query:
-            result_df = result_df[result_df["heading_0"].str.contains(search_query, case=False, na=False)]
+            result_df = result_df[result_df["question_text"].str.contains(search_query, case=False, na=False)]
         if match_filter and "Final_Match_Type" in result_df.columns:
             result_df = result_df[result_df["Final_Match_Type"].isin(match_filter)]
         if show_main_only:
@@ -1952,13 +1954,13 @@ elif st.session_state.page == "uid_matching":
         if not result_df.empty:
             uid_options = [None]
             if st.session_state.question_bank is not None:
-                uid_options.extend([f"{row['uid']} - {row['heading_0']}" for _, row in st.session_state.question_bank.iterrows()])
+                uid_options.extend([f"{row['UID']} - {row['HEADING_0']}" for _, row in st.session_state.question_bank.iterrows()])
             
             # Create required column if it doesn't exist
             if "required" not in result_df.columns:
                 result_df["required"] = False
             
-            display_columns = ["question_uid", "heading_0", "schema_type", "is_choice"]
+            display_columns = ["question_uid", "question_text", "schema_type", "is_choice"]
             if "Final_UID" in result_df.columns:
                 display_columns.append("Final_UID")
             if "Change_UID" in result_df.columns:
@@ -1972,7 +1974,7 @@ elif st.session_state.page == "uid_matching":
                 result_df[available_columns],
                 column_config={
                     "question_uid": st.column_config.TextColumn("Question ID", width="medium"),
-                    "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
+                    "question_text": st.column_config.TextColumn("Question/Choice", width="large"),
                     "schema_type": st.column_config.TextColumn("Type", width="medium"),
                     "is_choice": st.column_config.CheckboxColumn("Is Choice", width="small"),
                     "Final_UID": st.column_config.TextColumn("Current UID", width="medium"),
@@ -1984,7 +1986,7 @@ elif st.session_state.page == "uid_matching":
                     ),
                     "required": st.column_config.CheckboxColumn("Required", width="small")
                 },
-                disabled=["question_uid", "heading_0", "schema_type", "is_choice", "Final_UID"],
+                disabled=["question_uid", "question_text", "schema_type", "is_choice", "Final_UID"],
                 hide_index=True,
                 height=400
             )
@@ -2081,10 +2083,10 @@ elif st.session_state.page == "build_optimization":
         with col1:
             st.metric("📊 Total Records", f"{len(df_reference):,}")
         with col2:
-            unique_uids = df_reference['uid'].nunique()
+            unique_uids = df_reference['UID'].nunique()
             st.metric("🆔 Unique UIDs", f"{unique_uids:,}")
         with col3:
-            unique_questions = df_reference['heading_0'].nunique()
+            unique_questions = df_reference['HEADING_0'].nunique()
             st.metric("📝 Unique Questions", f"{unique_questions:,}")
         
         # Build optimization
@@ -2222,8 +2224,8 @@ elif st.session_state.page == "conflict_dashboard":
         
         for idx, row in top_conflicts.iterrows():
             with st.expander(f"Conflict: {row['question'][:80]}..."):
-                st.write(f"**Winner UID:** {row['winner_uid']} ({row['winner_count']} occurrences, {row['winner_percentage']:.1f}%)")
-                st.write(f"**Top Competitor:** UID {row['top_competitor_uid']} ({row['top_competitor_count']} occurrences, {row['top_competitor_percentage']:.1f}%)")
+                st.write(f"**Winner UID:** {row['winner_UID']} ({row['winner_count']} occurrences, {row['winner_percentage']:.1f}%)")
+                st.write(f"**Top Competitor:** UID {row['top_competitor_UID']} ({row['top_competitor_count']} occurrences, {row['top_competitor_percentage']:.1f}%)")
                 st.write(f"**Authority Difference:** {row['authority_difference']:.1f}%")
                 st.write(f"**Conflict Severity:** {row['conflict_severity']} competing records")
                 if row['is_high_conflict']:
@@ -2249,7 +2251,7 @@ elif st.session_state.page == "question_bank":
     
     with col2:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        unique_uids = st.session_state.question_bank["uid"].nunique()
+        unique_uids = st.session_state.question_bank["UID"].nunique()
         st.metric("🆔 Unique UIDs", f"{unique_uids:,}")
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -2265,12 +2267,12 @@ elif st.session_state.page == "question_bank":
     
     display_df = st.session_state.question_bank.copy()
     if search_query:
-        mask = (display_df["heading_0"].str.contains(search_query, case=False, na=False) |
-                display_df["uid"].str.contains(search_query, case=False, na=False))
+        mask = (display_df["HEADING_0"].str.contains(search_query, case=False, na=False) |
+                display_df["UID"].str.contains(search_query, case=False, na=False))
         display_df = display_df[mask]
     
     # Display question bank
-    st.dataframe(display_df[["uid", "heading_0"]], use_container_width=True, height=400)
+    st.dataframe(display_df[["UID", "HEADING_0"]], use_container_width=True, height=400)
     
     # Export option
     if st.button("📥 Download Question Bank", use_container_width=True):
@@ -2300,22 +2302,22 @@ elif st.session_state.page == "survey_creation":
         
         # Initialize edited_df in session state if it doesn't exist
         if "edited_df" not in st.session_state:
-            st.session_state.edited_df = pd.DataFrame(columns=["heading_0", "schema_type", "is_choice", "required"])
+            st.session_state.edited_df = pd.DataFrame(columns=["question_text", "schema_type", "is_choice", "required"])
 
         def highlight_duplicates(df):
             styles = pd.DataFrame('', index=df.index, columns=df.columns)
             if not df.empty:
-                main_questions = df[df["is_choice"] == False]["heading_0"]
+                main_questions = df[df["is_choice"] == False]["question_text"]
                 duplicates = main_questions[main_questions.duplicated(keep=False)]
                 if not duplicates.empty:
-                    mask = (df["is_choice"] == False) & (df["heading_0"].isin(duplicates))
-                    styles.loc[mask, "heading_0"] = 'background-color: #ffcccc'
+                    mask = (df["is_choice"] == False) & (df["question_text"].isin(duplicates))
+                    styles.loc[mask, "question_text"] = 'background-color: #ffcccc'
             return styles
 
         edited_df = st.data_editor(
             st.session_state.edited_df,
             column_config={
-                "heading_0": st.column_config.SelectboxColumn(
+                "question_text": st.column_config.SelectboxColumn(
                     "Question/Choice",
                     options=[""] + st.session_state.dedup_questions + st.session_state.dedup_choices,
                     default="",
@@ -2348,10 +2350,10 @@ elif st.session_state.page == "survey_creation":
         
         # Process form submissions
         if validate_btn and st.session_state.question_bank is not None:
-            non_standard = edited_df[~edited_df["heading_0"].isin(st.session_state.question_bank["heading_0"])]
+            non_standard = edited_df[~edited_df["question_text"].isin(st.session_state.question_bank["HEADING_0"])]
             if not non_standard.empty:
                 st.markdown('<div class="warning-card">⚠️ Non-standard questions detected:</div>', unsafe_allow_html=True)
-                st.dataframe(non_standard[["heading_0"]], use_container_width=True)
+                st.dataframe(non_standard[["question_text"]], use_container_width=True)
                 st.markdown("[📝 Submit New Questions](https://docs.google.com/forms/d/1LoY_La59UJ4ZsuxckM8Wl52kVeLI7a1t1MF8zIQxGUs)")
             else:
                 st.markdown('<div class="success-card">✅ All questions are validated!</div>', unsafe_allow_html=True)
