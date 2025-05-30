@@ -272,9 +272,8 @@ def normalize_question_for_grouping(text):
 
 def get_unique_questions_by_category():
     """Extract unique questions per category from ALL cached survey data - independent of selection"""
-    # Load all available questions from cache or fetch
+    # First try to load from cache
     if st.session_state.all_questions is None or st.session_state.all_questions.empty:
-        # Try to load from cache first
         cached_questions, cached_dedup_questions, cached_dedup_choices = load_cached_survey_data()
         if cached_questions is not None and not cached_questions.empty:
             st.session_state.all_questions = cached_questions
@@ -282,74 +281,132 @@ def get_unique_questions_by_category():
             st.session_state.dedup_choices = cached_dedup_choices
             st.session_state.fetched_survey_ids = cached_questions["survey_id"].unique().tolist()
     
+    # If still no data, fetch ALL surveys from SurveyMonkey directly
+    if st.session_state.all_questions is None or st.session_state.all_questions.empty:
+        token = get_surveymonkey_token()
+        if token:
+            try:
+                with st.spinner("🔄 Fetching ALL surveys from SurveyMonkey for categorization..."):
+                    surveys = get_surveys_cached(token)
+                    combined_questions = []
+                    
+                    # Fetch all surveys (limit to reasonable number for performance)
+                    surveys_to_process = surveys[:50]  # Limit to first 50 surveys
+                    
+                    progress_bar = st.progress(0)
+                    for i, survey in enumerate(surveys_to_process):
+                        survey_id = survey['id']
+                        try:
+                            survey_json = get_survey_details_with_retry(survey_id, token)
+                            questions = extract_questions(survey_json)
+                            combined_questions.extend(questions)
+                            time.sleep(REQUEST_DELAY)
+                            progress_bar.progress((i + 1) / len(surveys_to_process))
+                        except Exception as e:
+                            logger.error(f"Failed to fetch survey {survey_id}: {e}")
+                            continue
+                    
+                    progress_bar.empty()
+                    
+                    if combined_questions:
+                        st.session_state.all_questions = pd.DataFrame(combined_questions)
+                        st.session_state.dedup_questions = sorted(st.session_state.all_questions[
+                            st.session_state.all_questions["is_choice"] == False
+                        ]["question_text"].unique().tolist())
+                        st.session_state.dedup_choices = sorted(st.session_state.all_questions[
+                            st.session_state.all_questions["is_choice"] == True
+                        ]["question_text"].apply(lambda x: x.split(" - ", 1)[1] if " - " in x else x).unique().tolist())
+                        
+                        # Save to cache
+                        save_cached_survey_data(
+                            st.session_state.all_questions,
+                            st.session_state.dedup_questions,
+                            st.session_state.dedup_choices
+                        )
+                        
+                        st.success(f"✅ Fetched {len(combined_questions)} questions from {len(surveys_to_process)} surveys")
+                    
+            except Exception as e:
+                logger.error(f"Failed to fetch surveys for categorization: {e}")
+                st.error(f"❌ Failed to fetch surveys: {str(e)}")
+                return pd.DataFrame()
+    
     all_questions_df = st.session_state.all_questions
     
     if all_questions_df is None or all_questions_df.empty:
         return pd.DataFrame()
     
-    # Add category column based on survey title
-    all_questions_df['survey_category'] = all_questions_df['survey_title'].apply(categorize_survey_by_title)
-    
-    # Clean and normalize question text
-    all_questions_df['cleaned_question_text'] = all_questions_df['question_text'].apply(clean_question_text)
-    all_questions_df['normalized_question'] = all_questions_df['cleaned_question_text'].apply(normalize_question_for_grouping)
-    
-    # Group by category and get unique questions
-    category_questions = []
-    
-    for category in list(SURVEY_CATEGORIES.keys()) + ["Uncategorized"]:
-        category_df = all_questions_df[all_questions_df['survey_category'] == category]
+    try:
+        # Add category column based on survey title
+        all_questions_df['survey_category'] = all_questions_df['survey_title'].apply(categorize_survey_by_title)
         
-        if not category_df.empty:
-            # Get unique main questions (not choices) by normalized text
-            main_questions_df = category_df[category_df['is_choice'] == False]
-            unique_main_questions = main_questions_df.groupby('normalized_question').first()
+        # Clean and normalize question text
+        all_questions_df['cleaned_question_text'] = all_questions_df['question_text'].apply(clean_question_text)
+        all_questions_df['normalized_question'] = all_questions_df['cleaned_question_text'].apply(normalize_question_for_grouping)
+        
+        # Group by category and get unique questions
+        category_questions = []
+        
+        for category in list(SURVEY_CATEGORIES.keys()) + ["Uncategorized"]:
+            category_df = all_questions_df[all_questions_df['survey_category'] == category]
             
-            # Get unique choices by normalized text
-            choices_df = category_df[category_df['is_choice'] == True]
-            unique_choices = choices_df.groupby('normalized_question').first()
-            
-            # Add main questions
-            for _, question_data in unique_main_questions.iterrows():
-                # Count surveys for this normalized question
-                survey_count = len(main_questions_df[
-                    main_questions_df['normalized_question'] == question_data['normalized_question']
-                ]['survey_id'].unique())
+            if not category_df.empty:
+                # Get unique main questions (not choices) by normalized text
+                main_questions_df = category_df[category_df['is_choice'] == False].copy()
+                if not main_questions_df.empty:
+                    unique_main_questions = main_questions_df.groupby('normalized_question').first()
+                    
+                    # Add main questions
+                    for norm_question, question_data in unique_main_questions.iterrows():
+                        # Count surveys for this normalized question
+                        survey_count = len(main_questions_df[
+                            main_questions_df['normalized_question'] == norm_question
+                        ]['survey_id'].unique())
+                        
+                        category_questions.append({
+                            'survey_category': category,
+                            'question_text': question_data['cleaned_question_text'],
+                            'schema_type': question_data.get('schema_type'),
+                            'is_choice': False,
+                            'parent_question': None,
+                            'survey_count': survey_count,
+                            'Final_UID': None,
+                            'configured_final_UID': None,
+                            'Change_UID': None,
+                            'required': False
+                        })
                 
-                category_questions.append({
-                    'survey_category': category,
-                    'question_text': question_data['cleaned_question_text'],
-                    'schema_type': question_data.get('schema_type'),
-                    'is_choice': False,
-                    'parent_question': None,
-                    'survey_count': survey_count,
-                    'Final_UID': None,
-                    'configured_final_UID': None,
-                    'Change_UID': None,
-                    'required': False
-                })
-            
-            # Add choices
-            for _, choice_data in unique_choices.iterrows():
-                # Count surveys for this normalized choice
-                survey_count = len(choices_df[
-                    choices_df['normalized_question'] == choice_data['normalized_question']
-                ]['survey_id'].unique())
-                
-                category_questions.append({
-                    'survey_category': category,
-                    'question_text': choice_data['cleaned_question_text'],
-                    'schema_type': choice_data.get('schema_type'),
-                    'is_choice': True,
-                    'parent_question': choice_data.get('parent_question'),
-                    'survey_count': survey_count,
-                    'Final_UID': None,
-                    'configured_final_UID': None,
-                    'Change_UID': None,
-                    'required': False
-                })
-    
-    return pd.DataFrame(category_questions)
+                # Get unique choices by normalized text
+                choices_df = category_df[category_df['is_choice'] == True].copy()
+                if not choices_df.empty:
+                    unique_choices = choices_df.groupby('normalized_question').first()
+                    
+                    # Add choices
+                    for norm_question, choice_data in unique_choices.iterrows():
+                        # Count surveys for this normalized choice
+                        survey_count = len(choices_df[
+                            choices_df['normalized_question'] == norm_question
+                        ]['survey_id'].unique())
+                        
+                        category_questions.append({
+                            'survey_category': category,
+                            'question_text': choice_data['cleaned_question_text'],
+                            'schema_type': choice_data.get('schema_type'),
+                            'is_choice': True,
+                            'parent_question': choice_data.get('parent_question'),
+                            'survey_count': survey_count,
+                            'Final_UID': None,
+                            'configured_final_UID': None,
+                            'Change_UID': None,
+                            'required': False
+                        })
+        
+        return pd.DataFrame(category_questions)
+        
+    except Exception as e:
+        logger.error(f"Error in get_unique_questions_by_category: {e}")
+        st.error(f"❌ Error processing categorized questions: {str(e)}")
+        return pd.DataFrame()
 
 # Identity Detection Functions
 def contains_identity_info(text):
@@ -1703,15 +1760,33 @@ elif st.session_state.page == "survey_categorization":
             st.markdown(f"**{category}:** {', '.join(keywords)}")
         st.markdown("**Uncategorized:** Surveys that don't match any category")
     
-    # Generate categorized questions from ALL cached survey data - independent of selection
-    with st.spinner("📊 Analyzing all survey categories from cached data..."):
+    # Generate categorized questions from ALL cached survey data - truly independent
+    with st.spinner("📊 Analyzing all survey categories (independent of selection)..."):
         categorized_df = get_unique_questions_by_category()
     
     if categorized_df.empty:
-        st.markdown('<div class="warning-card">⚠️ No categorized questions found. Please fetch surveys from SurveyMonkey first.</div>', unsafe_allow_html=True)
-        if st.button("📋 Go to Survey Selection"):
-            st.session_state.page = "survey_selection"
-            st.rerun()
+        st.markdown('<div class="warning-card">⚠️ No survey data available for categorization.</div>', unsafe_allow_html=True)
+        st.markdown("**This page is now truly independent and will:**")
+        st.markdown("• First try to load cached survey data")
+        st.markdown("• If no cache exists, automatically fetch surveys from SurveyMonkey")
+        st.markdown("• Process all available surveys for categorization")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Force Refresh All Survey Data", use_container_width=True):
+                # Clear all cached data and force fresh fetch
+                st.session_state.all_questions = None
+                st.session_state.dedup_questions = []
+                st.session_state.dedup_choices = []
+                st.session_state.fetched_survey_ids = []
+                if os.path.exists(CACHE_FILE):
+                    os.remove(CACHE_FILE)
+                st.rerun()
+        
+        with col2:
+            if st.button("📋 Go to Survey Selection (Optional)", use_container_width=True):
+                st.session_state.page = "survey_selection"
+                st.rerun()
         st.stop()
     
     # Show data cleaning info
