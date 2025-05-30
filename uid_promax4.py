@@ -253,7 +253,7 @@ def get_unique_questions_by_category(all_questions_df):
                 ].iloc[0]
                 
                 category_questions.append({
-                    'category': category,
+                    'survey_category': category,
                     'question_uid': question_data.get('question_uid'),
                     'heading_0': question,
                     'schema_type': question_data.get('schema_type'),
@@ -278,7 +278,7 @@ def get_unique_questions_by_category(all_questions_df):
                 ].iloc[0]
                 
                 category_questions.append({
-                    'category': category,
+                    'survey_category': category,
                     'question_uid': choice_data.get('question_uid'),
                     'heading_0': choice,
                     'schema_type': choice_data.get('schema_type'),
@@ -621,6 +621,23 @@ def get_configured_surveys_from_snowflake():
         logger.error(f"Failed to get configured surveys: {e}")
         return []
 
+# Count configured surveys from cache
+def count_configured_surveys_from_cache():
+    """Count how many cached surveys are configured in Snowflake"""
+    try:
+        # Get configured survey IDs from Snowflake
+        configured_surveys = get_configured_surveys_from_snowflake()
+        
+        # Get cached survey IDs (from fetched_survey_ids in session state)
+        cached_survey_ids = st.session_state.get('fetched_survey_ids', [])
+        
+        # Count intersection
+        configured_count = len([sid for sid in cached_survey_ids if sid in configured_surveys])
+        return configured_count
+    except Exception as e:
+        logger.error(f"Failed to count configured surveys: {e}")
+        return 0
+
 # Snowflake Queries - Fixed column name handling
 def run_snowflake_reference_query(limit=10000, offset=0):
     query = """
@@ -708,8 +725,7 @@ def get_all_reference_questions_from_snowflake():
             except Exception as e2:
                 logger.error(f"Both enhanced and simple queries failed: {e2}")
                 return pd.DataFrame()
-    
-    if all_data:
+              if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         # Ensure proper column naming
         if 'occurrence_count' not in final_df.columns:
@@ -1400,10 +1416,7 @@ if st.session_state.page == "home":
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
         if sf_status:
             try:
-                configured_surveys = get_configured_surveys_from_snowflake()
-                # Count how many of our surveys are configured
-                survey_ids_from_sm = [s['id'] for s in surveys] if surveys else []
-                configured_count = len([sid for sid in survey_ids_from_sm if sid in configured_surveys])
+                configured_count = count_configured_surveys_from_cache()
                 st.metric("🎯 Configured Surveys", f"{configured_count}")
             except:
                 st.metric("🎯 Configured Surveys", "Error")
@@ -1432,8 +1445,8 @@ if st.session_state.page == "home":
     with col2:
         st.markdown("### 2️⃣ Survey Categorization")
         st.markdown("Categorize by survey purpose:")
-        st.markdown("• Analyze survey titles")
-        st.markdown("• Group by categories")
+        st.markdown("• Filter by survey categories")
+        st.markdown("• Group by question types")
         st.markdown("• Assign UIDs by category")
         
         if st.button("📊 Start Survey Categories", use_container_width=True):
@@ -1602,7 +1615,7 @@ elif st.session_state.page == "survey_selection":
 
 elif st.session_state.page == "survey_categorization":
     st.markdown("## 📊 Survey Categorization")
-    st.markdown('<div class="data-source-info">📂 <strong>Process:</strong> Categorize questions by type and schema → Assign UIDs by category</div>', unsafe_allow_html=True)
+    st.markdown('<div class="data-source-info">📂 <strong>Process:</strong> Filter by survey categories → Select question types → Assign UIDs</div>', unsafe_allow_html=True)
     
     # Category overview
     st.markdown("### 📂 Survey Categories Overview")
@@ -1638,7 +1651,7 @@ elif st.session_state.page == "survey_categorization":
     # Category metrics
     st.markdown("### 📊 Category Metrics")
     
-    category_stats = categorized_df.groupby('category').agg({
+    category_stats = categorized_df.groupby('survey_category').agg({
         'heading_0': 'count',
         'survey_count': 'sum'
     }).rename(columns={'heading_0': 'question_count'}).reset_index()
@@ -1649,23 +1662,23 @@ elif st.session_state.page == "survey_categorization":
         with cols[idx % len(cols)]:
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             st.metric(
-                f"📂 {row['category']}", 
+                f"📂 {row['survey_category']}", 
                 f"{row['question_count']} questions",
                 f"From {row['survey_count']} surveys"
             )
             st.markdown('</div>', unsafe_allow_html=True)
     
     # Category filter and display
-    st.markdown("### 🔍 Questions by Category")
+    st.markdown("### 🔍 Questions by Survey Category")
     
-    # Filters - Only need question category and question type
+    # Filters - Survey category and question type
     col1, col2 = st.columns(2)
     with col1:
-        question_category_filter = st.multiselect(
-            "Filter by question category:",
-            ["Heading", "Main Question/Multiple Choice"],
-            default=["Main Question/Multiple Choice"],
-            key="cat_question_category_filter"
+        survey_category_filter = st.multiselect(
+            "Filter by survey category:",
+            list(SURVEY_CATEGORIES.keys()) + ["Uncategorized"],
+            default=list(SURVEY_CATEGORIES.keys()) + ["Uncategorized"],
+            key="cat_survey_category_filter"
         )
     
     with col2:
@@ -1682,9 +1695,9 @@ elif st.session_state.page == "survey_categorization":
     # Apply filters
     filtered_df = categorized_df.copy()
     
-    # Filter by question category
-    if question_category_filter:
-        filtered_df = filtered_df[filtered_df['question_category'].isin(question_category_filter)]
+    # Filter by survey category
+    if survey_category_filter:
+        filtered_df = filtered_df[filtered_df['survey_category'].isin(survey_category_filter)]
     
     # Filter by schema type
     if schema_filter:
@@ -1705,7 +1718,7 @@ elif st.session_state.page == "survey_categorization":
         
         # Display and edit questions
         display_columns = [
-            "question_category", "question_uid", "heading_0", "schema_type", 
+            "survey_category", "question_uid", "heading_0", "schema_type", 
             "is_choice", "survey_count", "Final_UID", "Change_UID", "required"
         ]
         
@@ -1715,7 +1728,7 @@ elif st.session_state.page == "survey_categorization":
         edited_categorized_df = st.data_editor(
             filtered_df[available_columns],
             column_config={
-                "question_category": st.column_config.TextColumn("Question Category", width="medium"),
+                "survey_category": st.column_config.TextColumn("Survey Category", width="medium"),
                 "question_uid": st.column_config.TextColumn("Question ID", width="medium"),
                 "heading_0": st.column_config.TextColumn("Question/Choice", width="large"),
                 "schema_type": st.column_config.TextColumn("Type", width="medium"),
@@ -1730,7 +1743,7 @@ elif st.session_state.page == "survey_categorization":
                 ),
                 "required": st.column_config.CheckboxColumn("Required", width="small")
             },
-            disabled=["question_category", "question_uid", "heading_0", "schema_type", "is_choice", "survey_count", "Final_UID"],
+            disabled=["survey_category", "question_uid", "heading_0", "schema_type", "is_choice", "survey_count", "Final_UID"],
             hide_index=True,
             height=500,
             key="categorized_editor"
@@ -1780,10 +1793,10 @@ elif st.session_state.page == "survey_categorization":
                     key="cat_download"
                 )
         
-        # Summary by question category
-        st.markdown("### 📊 Assignment Summary by Question Category")
+        # Summary by survey category
+        st.markdown("### 📊 Assignment Summary by Survey Category")
         
-        assignment_summary = categorized_df.groupby('question_category').agg({
+        assignment_summary = categorized_df.groupby('survey_category').agg({
             'heading_0': 'count',
             'Final_UID': lambda x: x.notna().sum()
         }).rename(columns={
@@ -1805,13 +1818,13 @@ elif st.session_state.page == "survey_categorization":
         
         if st.session_state.all_questions is not None:
             survey_analysis = st.session_state.all_questions.groupby(['survey_title', 'survey_id']).first().reset_index()
-            survey_analysis['category'] = survey_analysis['survey_title'].apply(categorize_survey_by_title)
+            survey_analysis['survey_category'] = survey_analysis['survey_title'].apply(categorize_survey_by_title)
             
             st.dataframe(
-                survey_analysis[['survey_title', 'category', 'survey_id']],
+                survey_analysis[['survey_title', 'survey_category', 'survey_id']],
                 column_config={
                     "survey_title": st.column_config.TextColumn("Survey Title", width="large"),
-                    "category": st.column_config.TextColumn("Assigned Category", width="medium"),
+                    "survey_category": st.column_config.TextColumn("Assigned Category", width="medium"),
                     "survey_id": st.column_config.TextColumn("Survey ID", width="medium")
                 },
                 use_container_width=True,
@@ -2373,14 +2386,10 @@ with footer_col3:
     # Show configured surveys count
     if sf_status:
         try:
-            configured_surveys = get_configured_surveys_from_snowflake()
-            survey_ids_from_sm = [s['id'] for s in surveys] if surveys else []
-            configured_count = len([sid for sid in survey_ids_from_sm if sid in configured_surveys])
+            configured_count = count_configured_surveys_from_cache()
             st.write(f"Configured: {configured_count}")
         except:
             st.write("Configured: Error")
 
 # ============= END OF SCRIPT =============
-
-
 
