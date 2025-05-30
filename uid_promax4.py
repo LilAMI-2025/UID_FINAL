@@ -2404,4 +2404,3 @@ with footer_col3:
             st.write("Configured: Error")
 
 # ============= END OF SCRIPT =============
-
