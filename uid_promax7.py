@@ -169,7 +169,6 @@ HEADING_REFERENCES = [
     "This section contains the heart of what we would like you to tell us. The following twenty Winning Behaviours represent what managers and staff do in any successful and growing organisation.",
     "Welcome to the Business Development Service Provider (BDSP) Diagnostic Tool, a crucial component in our mission to map and enhance the BDS landscape in Rwanda.",
     "Thank you for dedicating your time and effort to complete this diagnostic tool. Your valuable insights are crucial in our mission to map the landscape of BDS provision in Rwanda.",
-    # ... (add other heading references)
     "Understanding your future plans and perspectives helps us anticipate trends and prepare for the evolving needs of the BDS sector.",
     "Thank You for Your Participation",
     "Your participation is a significant step towards creating a more robust, responsive, and effective BDS ecosystem that can drive sustainable MSME growth and contribute to Rwanda's economic development."
@@ -240,6 +239,191 @@ def get_tfidf_vectors(df_reference):
     vectorizer = TfidfVectorizer(ngram_range=(1, 2))
     vectors = vectorizer.fit_transform(df_reference["norm_text"])
     return vectorizer, vectors
+
+# ============= IMPROVED SURVEYMONKEY FUNCTIONS =============
+def get_surveymonkey_token():
+    """Get SurveyMonkey API token from secrets with improved error handling"""
+    try:
+        # Check if secrets exist
+        if "surveymonkey" not in st.secrets:
+            logger.error("SurveyMonkey secrets not found in st.secrets")
+            return None
+        
+        # Get the token
+        token = st.secrets["surveymonkey"]["access_token"]
+        
+        # Validate token format (SurveyMonkey tokens are typically long strings)
+        if not token or len(token) < 10:
+            logger.error("SurveyMonkey token appears to be invalid or empty")
+            return None
+            
+        logger.info("SurveyMonkey token retrieved successfully")
+        return token
+        
+    except KeyError as e:
+        logger.error(f"SurveyMonkey token key not found: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get SurveyMonkey token: {e}")
+        return None
+
+def check_surveymonkey_connection():
+    """Check SurveyMonkey API connection status with detailed error reporting"""
+    try:
+        token = get_surveymonkey_token()
+        if not token:
+            return False, "No access token available - check secrets configuration"
+        
+        # Test API call with better error handling
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.get(
+            "https://api.surveymonkey.com/v3/users/me", 
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            user_data = response.json()
+            username = user_data.get("username", "Unknown")
+            return True, f"Connected successfully as {username}"
+        elif response.status_code == 401:
+            return False, "Authentication failed - invalid token"
+        elif response.status_code == 403:
+            return False, "Access forbidden - check token permissions"
+        elif response.status_code == 429:
+            return False, "Rate limit exceeded - try again later"
+        else:
+            return False, f"API error: {response.status_code} - {response.text}"
+            
+    except requests.exceptions.Timeout:
+        return False, "Connection timeout - check internet connection"
+    except requests.exceptions.ConnectionError:
+        return False, "Connection error - unable to reach SurveyMonkey API"
+    except Exception as e:
+        return False, f"Connection failed: {str(e)}"
+
+def validate_secrets_configuration():
+    """Validate that all required secrets are properly configured"""
+    missing_secrets = []
+    invalid_secrets = []
+    
+    # Check SurveyMonkey secrets
+    try:
+        if "surveymonkey" not in st.secrets:
+            missing_secrets.append("surveymonkey")
+        else:
+            sm_secrets = st.secrets["surveymonkey"]
+            if "access_token" not in sm_secrets:
+                missing_secrets.append("surveymonkey.access_token")
+            elif not sm_secrets["access_token"] or len(sm_secrets["access_token"]) < 10:
+                invalid_secrets.append("surveymonkey.access_token (too short or empty)")
+    except Exception as e:
+        missing_secrets.append(f"surveymonkey (error: {e})")
+    
+    # Check Snowflake secrets
+    try:
+        if "snowflake" not in st.secrets:
+            missing_secrets.append("snowflake")
+        else:
+            sf_secrets = st.secrets["snowflake"]
+            required_sf_keys = ["user", "password", "account", "database", "schema", "warehouse", "role"]
+            for key in required_sf_keys:
+                if key not in sf_secrets:
+                    missing_secrets.append(f"snowflake.{key}")
+                elif not sf_secrets[key]:
+                    invalid_secrets.append(f"snowflake.{key} (empty)")
+    except Exception as e:
+        missing_secrets.append(f"snowflake (error: {e})")
+    
+    return missing_secrets, invalid_secrets
+
+def initialize_connections_with_better_errors():
+    """Initialize connections with detailed error reporting"""
+    
+    # Validate secrets first
+    missing_secrets, invalid_secrets = validate_secrets_configuration()
+    
+    if missing_secrets or invalid_secrets:
+        st.markdown('<div class="conflict-card">', unsafe_allow_html=True)
+        st.markdown("### ❌ Configuration Issues Detected")
+        
+        if missing_secrets:
+            st.markdown("**Missing Secrets:**")
+            for secret in missing_secrets:
+                st.markdown(f"• `{secret}`")
+        
+        if invalid_secrets:
+            st.markdown("**Invalid Secrets:**")
+            for secret in invalid_secrets:
+                st.markdown(f"• `{secret}`")
+        
+        st.markdown("**How to fix:**")
+        st.markdown("1. Go to your Streamlit app settings")
+        st.markdown("2. Navigate to the 'Secrets' section")
+        st.markdown("3. Add the missing/invalid secrets in TOML format:")
+        
+        st.code("""
+[surveymonkey]
+access_token = "your_surveymonkey_token_here"
+
+[snowflake]
+user = "your_username"
+password = "your_password"
+account = "your_account"
+database = "your_database"
+schema = "your_schema"
+warehouse = "your_warehouse"
+role = "your_role"
+        """, language="toml")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        return False
+    
+    return True
+
+def safe_initialize_app():
+    """Safely initialize the app with better error handling"""
+    
+    # First validate configuration
+    if not initialize_connections_with_better_errors():
+        st.stop()
+    
+    # Initialize connections
+    try:
+        # Test SurveyMonkey connection
+        sm_status, sm_msg = check_surveymonkey_connection()
+        
+        if not sm_status:
+            st.markdown('<div class="warning-card">', unsafe_allow_html=True)
+            st.markdown(f"⚠️ **SurveyMonkey Connection Issue:** {sm_msg}")
+            st.markdown("</div>", unsafe_allow_html=True)
+            surveys = []
+            token = None
+        else:
+            token = get_surveymonkey_token()
+            try:
+                surveys = get_surveys_cached(token) if token else []
+            except Exception as e:
+                st.warning(f"Failed to load surveys: {e}")
+                surveys = []
+        
+        # Test Snowflake connection
+        sf_status, sf_msg = check_snowflake_connection()
+        
+        if not sf_status:
+            st.markdown('<div class="warning-card">', unsafe_allow_html=True)
+            st.markdown(f"⚠️ **Snowflake Connection Issue:** {sf_msg}")
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        return surveys, token, sm_status, sm_msg, sf_status, sf_msg
+        
+    except Exception as e:
+        st.error(f"❌ Application initialization failed: {e}")
+        return [], None, False, str(e), False, "Not tested"
 
 # ============= UTILITY FUNCTIONS =============
 def enhanced_normalize(text, synonym_map=ENHANCED_SYNONYM_MAP):
@@ -536,7 +720,7 @@ def categorize_survey_by_title(title):
     return "Uncategorized"
 
 def clean_question_text(text):
-    """Clean question text by removing year specifications and extracting core question"""
+   """Clean question text by removing year specifications and extracting core question"""
     if not isinstance(text, str):
         return text
     
@@ -611,32 +795,6 @@ def save_cached_survey_data(all_questions, dedup_questions, dedup_choices):
         logger.error(f"Failed to save cache: {e}")
 
 # ============= SURVEYMONKEY API FUNCTIONS =============
-def get_surveymonkey_token():
-    """Get SurveyMonkey API token from secrets"""
-    try:
-        return st.secrets["surveymonkey"]["access_token"]
-    except Exception as e:
-        logger.error(f"Failed to get SurveyMonkey token: {e}")
-        return None
-
-def check_surveymonkey_connection():
-    """Check SurveyMonkey API connection status"""
-    try:
-        token = get_surveymonkey_token()
-        if not token:
-            return False, "No access token available"
-        
-        # Test API call
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.get("https://api.surveymonkey.com/v3/surveys?per_page=1", headers=headers)
-        
-        if response.status_code == 200:
-            return True, "Connected successfully"
-        else:
-            return False, f"API error: {response.status_code}"
-    except Exception as e:
-        return False, f"Connection failed: {str(e)}"
-
 @st.cache_data
 def get_surveys_cached(token):
     """Get all surveys from SurveyMonkey API"""
@@ -705,7 +863,7 @@ def extract_questions(survey_json):
                     "question_category": question_category
                 })
                 
-                  # Add choices
+                # Add choices
                 choices = question.get("answers", {}).get("choices", [])
                 for choice in choices:
                     choice_text = choice.get("text", "")
@@ -1102,10 +1260,10 @@ def run_uid_match(question_bank, df_target):
                         question_embedding = model.encode([row["question_text"]], convert_to_tensor=True)
                         reference_embeddings = model.encode(question_bank_norm["HEADING_0"].tolist(), convert_to_tensor=True)
                         semantic_scores = util.cos_sim(question_embedding, reference_embeddings)[0]
-                        max_semantic_score = torch.max(semantic_scores).item()
+                        max_semantic_score = max(semantic_scores).item()
                         
                         if max_semantic_score >= SEMANTIC_THRESHOLD:
-                            max_semantic_idx = torch.argmax(semantic_scores).item()
+                            max_semantic_idx = semantic_scores.argmax().item()
                             matched_uid = question_bank_norm.iloc[max_semantic_idx]["UID"]
                             df_target_norm.at[idx, "Final_UID"] = matched_uid
                             df_target_norm.at[idx, "Match_Confidence"] = "🧠 Semantic"
@@ -1299,15 +1457,33 @@ def upload_to_snowflake_tables(export_df_non_identity, export_df_identity):
 # Initialize session state
 initialize_session_state()
 
+# ============= MAIN APP INITIALIZATION =============
+# Load initial data with improved error handling
+surveys, token, sm_status, sm_msg, sf_status, sf_msg = safe_initialize_app()
+
+# Load cached survey data
+if st.session_state.all_questions is None:
+    cached_questions, cached_dedup_questions, cached_dedup_choices = load_cached_survey_data()
+    if cached_questions is not None and not cached_questions.empty:
+        st.session_state.all_questions = cached_questions
+        st.session_state.dedup_questions = cached_dedup_questions
+        st.session_state.dedup_choices = cached_dedup_choices
+        st.session_state.fetched_survey_ids = cached_questions["survey_id"].unique().tolist()
+
+# Load question bank
+if st.session_state.question_bank is None:
+    try:
+        st.session_state.question_bank = run_snowflake_reference_query()
+    except Exception:
+        st.warning("Failed to load question bank. Standardization checks disabled.")
+        st.session_state.question_bank = pd.DataFrame(columns=["HEADING_0", "UID"])
+
 # ============= SIDEBAR NAVIGATION =============
 with st.sidebar:
     st.markdown("### 🧠 UID Matcher Enhanced")
     st.markdown("Advanced question bank optimization with conflict resolution")
     
     # Connection status
-    sm_status, sm_msg = check_surveymonkey_connection()
-    sf_status, sf_msg = check_snowflake_connection()
-    
     st.markdown("**🔗 Connection Status**")
     st.write(f"📊 SurveyMonkey: {'✅' if sm_status else '❌'}")
     st.write(f"❄️ Snowflake: {'✅' if sf_status else '❌'}")
@@ -1340,7 +1516,7 @@ with st.sidebar:
         st.session_state.page = "survey_selection"
         st.rerun()
     
-      # Survey Categorization
+    # Survey Categorization
     st.markdown("**📂 Survey Categorization**")
     if st.button("📊 Survey Categories", use_container_width=True):
         st.session_state.page = "survey_categorization"
@@ -1372,44 +1548,6 @@ st.markdown('<div class="main-header">🧠 UID Matcher: Enhanced with 1:1 Optimi
 
 # Data source clarification
 st.markdown('<div class="data-source-info"><strong>📊 Data Flow:</strong> SurveyMonkey surveys → UID matching → Snowflake reference → Optimized 1:1 mapping</div>', unsafe_allow_html=True)
-
-# Secrets Validation
-if "snowflake" not in st.secrets or "surveymonkey" not in st.secrets:
-    st.markdown('<div class="warning-card">⚠️ Missing secrets configuration for Snowflake or SurveyMonkey.</div>', unsafe_allow_html=True)
-    st.stop()
-
-# Load initial data with error handling
-try:
-    token = get_surveymonkey_token()
-    if not token:
-        st.error("❌ Failed to get SurveyMonkey token")
-        surveys = []
-    else:
-        surveys = get_surveys_cached(token)
-        if not surveys:
-            st.error("No surveys found.")
-            surveys = []
-
-    # Load cached survey data
-    if st.session_state.all_questions is None:
-        cached_questions, cached_dedup_questions, cached_dedup_choices = load_cached_survey_data()
-        if cached_questions is not None and not cached_questions.empty:
-            st.session_state.all_questions = cached_questions
-            st.session_state.dedup_questions = cached_dedup_questions
-            st.session_state.dedup_choices = cached_dedup_choices
-            st.session_state.fetched_survey_ids = cached_questions["survey_id"].unique().tolist()
-
-    # Load question bank
-    if st.session_state.question_bank is None:
-        try:
-            st.session_state.question_bank = run_snowflake_reference_query()
-        except Exception:
-            st.warning("Failed to load question bank. Standardization checks disabled.")
-            st.session_state.question_bank = pd.DataFrame(columns=["HEADING_0", "UID"])
-
-except Exception as e:
-    st.error(f"SurveyMonkey initialization failed: {e}")
-    surveys = []
 
 # ============= PAGE ROUTING =============
 
@@ -2484,5 +2622,6 @@ with footer_col3:
             st.write("Configured: Error")
 
 # ============= END OF SCRIPT =============
+
 
 
