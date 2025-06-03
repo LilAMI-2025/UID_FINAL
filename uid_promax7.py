@@ -720,7 +720,7 @@ def categorize_survey_by_title(title):
     return "Uncategorized"
 
 def clean_question_text(text):
-   """Clean question text by removing year specifications and extracting core question"""
+    """Clean question text by removing year specifications and extracting core question"""
     if not isinstance(text, str):
         return text
     
@@ -749,6 +749,7 @@ def clean_question_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     
     return text
+
 
 def normalize_question_for_grouping(text):
     """Normalize question text for grouping similar questions"""
