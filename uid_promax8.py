@@ -331,7 +331,7 @@ UID_FINAL_REFERENCE = {
 "Do you feel that you have the support you need to get the most out of this programme? If yes, what support do you have available (eg. Dedicated learning time, accountability partner, device/internet access)? If no, what support would you wish for that you're currently missing)?": 339,
 "What did you love about the online courses? What did you wish was different? This could relate to a specific course or your general experience of working through AMI's online courses.": 340,
 "Are you more effective at work since participating in the programme?": 341,
-"After our first Learning Lab, you identified a /"Change Challenge"/ - something practical that you wanted to improve in your team / at work. Please describe what you wanted to change and some of the things you’ve done to make the change happen.": 342,
+"After our first Learning Lab, you identified a \"Change Challenge\" - something practical that you wanted to improve in your team / at work. Please describe what you wanted to change and some of the things you've done to make the change happen.": 342,
 "What was the most valuable framework, tool or course that helped you address your Change Challenge?": 343,
 "Did you know what was covered in the programme in which the participant(s) you supported was participating?": 345,
 "Optional: Please describe in your own words how you have benefited from engaging with AMI.": 346,
