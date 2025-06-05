@@ -1677,9 +1677,21 @@ def create_unique_uid_table(question_bank_with_authority):
         logger.error(f"Error creating unique UID table: {e}")
         return pd.DataFrame()
 
-# ============= UID MATCHING FUNCTIONS =============
-def run_uid_match(question_bank, df_target):
-    """Run UID matching algorithm between question bank and target questions"""
+# ============= OPTIMIZED UID MATCHING FUNCTIONS =============
+@st.cache_data(ttl=3600)
+def precompute_reference_embeddings(question_bank):
+    """Pre-compute and cache reference embeddings for semantic matching"""
+    try:
+        model = load_sentence_transformer()
+        reference_texts = question_bank["HEADING_0"].tolist()
+        embeddings = model.encode(reference_texts, convert_to_tensor=True, batch_size=32)
+        return embeddings
+    except Exception as e:
+        logger.error(f"Failed to precompute reference embeddings: {e}")
+        return None
+
+def run_uid_match_optimized(question_bank, df_target):
+    """Optimized UID matching algorithm with pre-computed embeddings and batch processing"""
     try:
         # Prepare question bank with normalized text
         question_bank_norm = question_bank.copy()
@@ -1689,68 +1701,86 @@ def run_uid_match(question_bank, df_target):
         df_target_norm = df_target.copy()
         df_target_norm["norm_text"] = df_target_norm["question_text"].apply(enhanced_normalize)
         
-        # Get TF-IDF vectors
+        # Get TF-IDF vectors (cached)
         vectorizer, reference_vectors = get_tfidf_vectors(question_bank_norm)
+        
+        # Pre-compute semantic embeddings (cached)
+        reference_embeddings = precompute_reference_embeddings(question_bank_norm)
         
         # Initialize results
         df_target_norm["Final_UID"] = None
         df_target_norm["Match_Confidence"] = None
         df_target_norm["Final_Match_Type"] = None
         
-        # Load sentence transformer for semantic matching
+        # Load sentence transformer for batch processing
         model = load_sentence_transformer()
         
-        # Process in batches
-        for start_idx in range(0, len(df_target_norm), BATCH_SIZE):
-            end_idx = min(start_idx + BATCH_SIZE, len(df_target_norm))
-            batch_df = df_target_norm.iloc[start_idx:end_idx].copy()
+        # Process all questions at once for TF-IDF
+        target_vectors = vectorizer.transform(df_target_norm["norm_text"])
+        tfidf_similarities = cosine_similarity(target_vectors, reference_vectors)
+        
+        # Batch process semantic matching for questions that need it
+        semantic_needed_indices = []
+        semantic_questions = []
+        
+        # First pass: TF-IDF matching
+        for i, (idx, row) in enumerate(df_target_norm.iterrows()):
+            tfidf_scores = tfidf_similarities[i]
+            max_tfidf_idx = np.argmax(tfidf_scores)
+            max_tfidf_score = tfidf_scores[max_tfidf_idx]
             
-            # Vectorize batch
-            batch_vectors = vectorizer.transform(batch_df["norm_text"])
-            
-            # Calculate TF-IDF similarities
-            tfidf_similarities = cosine_similarity(batch_vectors, reference_vectors)
-            
-            # Process each question in batch
-            for i, (idx, row) in enumerate(batch_df.iterrows()):
-                tfidf_scores = tfidf_similarities[i]
-                max_tfidf_idx = np.argmax(tfidf_scores)
-                max_tfidf_score = tfidf_scores[max_tfidf_idx]
+            if max_tfidf_score >= TFIDF_HIGH_CONFIDENCE:
+                matched_uid = question_bank_norm.iloc[max_tfidf_idx]["UID"]
+                df_target_norm.at[idx, "Final_UID"] = matched_uid
+                df_target_norm.at[idx, "Match_Confidence"] = "✅ High"
+                df_target_norm.at[idx, "Final_Match_Type"] = "✅ High"
+            elif max_tfidf_score >= TFIDF_LOW_CONFIDENCE:
+                matched_uid = question_bank_norm.iloc[max_tfidf_idx]["UID"]
+                df_target_norm.at[idx, "Final_UID"] = matched_uid
+                df_target_norm.at[idx, "Match_Confidence"] = "⚠️ Low"
+                df_target_norm.at[idx, "Final_Match_Type"] = "⚠️ Low"
+            else:
+                # Mark for semantic matching
+                semantic_needed_indices.append((i, idx))
+                semantic_questions.append(row["question_text"])
+        
+        # Batch semantic matching for remaining questions
+        if semantic_questions and reference_embeddings is not None:
+            try:
+                # Encode all unmatched questions at once
+                target_embeddings = model.encode(semantic_questions, convert_to_tensor=True, batch_size=32)
                 
-                # TF-IDF matching
-                if max_tfidf_score >= TFIDF_HIGH_CONFIDENCE:
-                    matched_uid = question_bank_norm.iloc[max_tfidf_idx]["UID"]
-                    df_target_norm.at[idx, "Final_UID"] = matched_uid
-                    df_target_norm.at[idx, "Match_Confidence"] = "✅ High"
-                    df_target_norm.at[idx, "Final_Match_Type"] = "✅ High"
-                elif max_tfidf_score >= TFIDF_LOW_CONFIDENCE:
-                    matched_uid = question_bank_norm.iloc[max_tfidf_idx]["UID"]
-                    df_target_norm.at[idx, "Final_UID"] = matched_uid
-                    df_target_norm.at[idx, "Match_Confidence"] = "⚠️ Low"
-                    df_target_norm.at[idx, "Final_Match_Type"] = "⚠️ Low"
-                else:
-                    # Try semantic matching
-                    try:
-                        question_embedding = model.encode([row["question_text"]], convert_to_tensor=True)
-                        reference_embeddings = model.encode(question_bank_norm["HEADING_0"].tolist(), convert_to_tensor=True)
-                        semantic_scores = util.cos_sim(question_embedding, reference_embeddings)[0]
-                        max_semantic_score = max(semantic_scores).item()
-                        
-                        if max_semantic_score >= SEMANTIC_THRESHOLD:
-                            max_semantic_idx = semantic_scores.argmax().item()
-                            matched_uid = question_bank_norm.iloc[max_semantic_idx]["UID"]
-                            df_target_norm.at[idx, "Final_UID"] = matched_uid
-                            df_target_norm.at[idx, "Match_Confidence"] = "🧠 Semantic"
-                            df_target_norm.at[idx, "Final_Match_Type"] = "🧠 Semantic"
-                        else:
-                            df_target_norm.at[idx, "Final_UID"] = None
-                            df_target_norm.at[idx, "Match_Confidence"] = "❌ No match"
-                            df_target_norm.at[idx, "Final_Match_Type"] = "❌ No match"
-                    except Exception as e:
-                        logger.error(f"Semantic matching failed for question {idx}: {e}")
-                        df_target_norm.at[idx, "Final_UID"] = None
-                        df_target_norm.at[idx, "Match_Confidence"] = "❌ No match"
-                        df_target_norm.at[idx, "Final_Match_Type"] = "❌ No match"
+                # Calculate similarities in batch
+                semantic_similarities = util.cos_sim(target_embeddings, reference_embeddings)
+                
+                # Process semantic results
+                for batch_idx, (original_idx, df_idx) in enumerate(semantic_needed_indices):
+                    semantic_scores = semantic_similarities[batch_idx]
+                    max_semantic_score = max(semantic_scores).item()
+                    
+                    if max_semantic_score >= SEMANTIC_THRESHOLD:
+                        max_semantic_idx = semantic_scores.argmax().item()
+                        matched_uid = question_bank_norm.iloc[max_semantic_idx]["UID"]
+                        df_target_norm.at[df_idx, "Final_UID"] = matched_uid
+                        df_target_norm.at[df_idx, "Match_Confidence"] = "🧠 Semantic"
+                        df_target_norm.at[df_idx, "Final_Match_Type"] = "🧠 Semantic"
+                    else:
+                        df_target_norm.at[df_idx, "Final_UID"] = None
+                        df_target_norm.at[df_idx, "Match_Confidence"] = "❌ No match"
+                        df_target_norm.at[df_idx, "Final_Match_Type"] = "❌ No match"
+            except Exception as e:
+                logger.error(f"Batch semantic matching failed: {e}")
+                # Fallback to no match for remaining questions
+                for _, df_idx in semantic_needed_indices:
+                    df_target_norm.at[df_idx, "Final_UID"] = None
+                    df_target_norm.at[df_idx, "Match_Confidence"] = "❌ No match"
+                    df_target_norm.at[df_idx, "Final_Match_Type"] = "❌ No match"
+        else:
+            # No semantic matching possible, mark remaining as no match
+            for _, df_idx in semantic_needed_indices:
+                df_target_norm.at[df_idx, "Final_UID"] = None
+                df_target_norm.at[df_idx, "Match_Confidence"] = "❌ No match"
+                df_target_norm.at[df_idx, "Final_Match_Type"] = "❌ No match"
         
         # Remove normalization column before returning
         df_target_norm = df_target_norm.drop(columns=["norm_text"])
@@ -1764,6 +1794,11 @@ def run_uid_match(question_bank, df_target):
         df_target["Match_Confidence"] = "❌ Error"
         df_target["Final_Match_Type"] = "❌ Error"
         return df_target
+
+# Update the original function to use the optimized version
+def run_uid_match(question_bank, df_target):
+    """Run UID matching algorithm between question bank and target questions (optimized)"""
+    return run_uid_match_optimized(question_bank, df_target)
 
 # ============= EXPORT FUNCTIONS =============
 def prepare_export_data(df_final):
@@ -2229,39 +2264,18 @@ elif st.session_state.page == "question_bank":
     
     st.markdown("---")
     
-    # Snowflake Question Bank (if available)
+    # Snowflake Question Bank (if available) - LOAD DATA BUT DON'T DISPLAY
     if sf_status:
         try:
-            with st.spinner ("📊 Loading enhanced question bank from Snowflake..."):
+            # Load data in background for functionality but don't display the enhanced section
+            with st.spinner("📊 Loading question bank data in background..."):
                 question_bank_with_authority = get_question_bank_with_authority_count()
             
             if not question_bank_with_authority.empty:
                 st.session_state.question_bank_with_authority = question_bank_with_authority
                 
-                st.markdown("### ❄️ Snowflake Question Bank (Enhanced)")
-                
-                # Enhanced metrics with UID Final info
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    total_records = len(question_bank_with_authority)
-                    st.metric("📊 Total Records", f"{total_records:,}")
-                with col2:
-                    unique_uids = question_bank_with_authority['UID'].nunique()
-                    st.metric("🆔 Unique UIDs", f"{unique_uids:,}")
-                with col3:
-                    unique_questions = question_bank_with_authority['HEADING_0'].nunique()
-                    st.metric("📝 Unique Questions", f"{unique_questions:,}")
-                with col4:
-                    uid_final_matches = question_bank_with_authority['UID_FINAL'].notna().sum()
-                    st.metric("🎯 UID Final Matches", f"{uid_final_matches:,}")
-                
-                # Show UID Final coverage
-                if 'UID_FINAL' in question_bank_with_authority.columns:
-                    coverage_percentage = (uid_final_matches / total_records) * 100
-                    st.markdown(f'<div class="info-card">📊 <strong>UID Final Coverage:</strong> {coverage_percentage:.1f}% of Snowflake questions have UID Final reference</div>', unsafe_allow_html=True)
-                
-                # Create Unique UID Table button
-                st.markdown("#### 🎯 Unique UID Table")
+                # Create Unique UID Table functionality (keep this)
+                st.markdown("### 🎯 Unique UID Table Management")
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -2316,123 +2330,6 @@ elif st.session_state.page == "question_bank":
                         use_container_width=True,
                         height=300
                     )
-                
-                # Filters for Snowflake data
-                st.markdown("#### 🔍 Filter Snowflake Question Bank")
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    uid_filter = st.text_input("🆔 Filter by UID (exact match):")
-                with col2:
-                    uid_final_filter = st.text_input("🎯 Filter by UID Final:")
-                with col3:
-                    min_authority = st.number_input("📊 Minimum Authority Count:", min_value=1, value=1)
-                with col4:
-                    search_text = st.text_input("🔍 Search question text:")
-                
-                # UID Final filter options
-                col1, col2 = st.columns(2)
-                with col1:
-                    show_uid_final_only = st.checkbox("Show only questions with UID Final", value=False)
-                with col2:
-                    show_conflicts_only = st.checkbox("Show only UID conflicts", value=False)
-                
-                # Apply filters
-                filtered_df = question_bank_with_authority.copy()
-                
-                if uid_filter:
-                    filtered_df = filtered_df[filtered_df['UID'].astype(str) == uid_filter]
-                
-                if uid_final_filter:
-                    filtered_df = filtered_df[filtered_df['UID_FINAL'].astype(str) == uid_final_filter]
-                
-                if min_authority > 1:
-                    filtered_df = filtered_df[filtered_df['AUTHORITY_COUNT'] >= min_authority]
-                
-                if search_text:
-                    filtered_df = filtered_df[
-                        filtered_df['HEADING_0'].str.contains(search_text, case=False, na=False)
-                    ]
-                
-                if show_uid_final_only:
-                    filtered_df = filtered_df[filtered_df['UID_FINAL'].notna()]
-                
-                if show_conflicts_only:
-                    # Show UIDs that have multiple questions
-                    uid_counts = filtered_df['UID'].value_counts()
-                    conflict_uids = uid_counts[uid_counts > 1].index
-                    filtered_df = filtered_df[filtered_df['UID'].isin(conflict_uids)]
-                
-                # Display results
-                st.markdown(f"#### 📋 Snowflake Question Bank ({len(filtered_df):,} records)")
-                
-                if not filtered_df.empty:
-                    # Sort by UID, then by authority count
-                    display_df = filtered_df.sort_values(['UID', 'AUTHORITY_COUNT'], ascending=[True, False])
-                    
-                    # Prepare columns for display
-                    display_columns = ['UID', 'HEADING_0', 'AUTHORITY_COUNT']
-                    if 'UID_FINAL' in display_df.columns:
-                        display_columns.append('UID_FINAL')
-                    
-                    # Define column config for main table
-                    main_column_config = {
-                        "UID": st.column_config.NumberColumn("UID", width="small"),
-                        "HEADING_0": st.column_config.TextColumn("Question Text", width="large"),
-                        "AUTHORITY_COUNT": st.column_config.NumberColumn("Authority Count", width="medium"),
-                        "UID_FINAL": st.column_config.NumberColumn("UID Final", width="medium")
-                    }
-                    
-                    st.dataframe(
-                        display_df[display_columns],
-                        column_config=main_column_config,
-                        use_container_width=True,
-                        height=500
-                    )
-                    
-                    # Download option
-                    csv_data = display_df.to_csv(index=False)
-                    st.download_button(
-                        "📥 Download Enhanced Question Bank",
-                        csv_data,
-                        f"enhanced_question_bank_filtered_{uuid4().hex[:8]}.csv",
-                        "text/csv"
-                    )
-                    
-                    # Analysis section
-                    st.markdown("#### 📊 Analysis")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # UID Final analysis
-                        if 'UID_FINAL' in display_df.columns:
-                            st.markdown("**🎯 UID Final Analysis**")
-                            uid_final_stats = display_df.groupby('UID_FINAL').size().sort_values(ascending=False).head(10)
-                            if not uid_final_stats.empty:
-                                st.write("Top 10 UID Final values:")
-                                for uid_final, count in uid_final_stats.items():
-                                    if pd.notna(uid_final):
-                                        st.write(f"• UID Final {int(uid_final)}: {count} questions")
-                    
-                    with col2:
-                        # Conflict analysis
-                        if len(display_df) > display_df['UID'].nunique():
-                            st.markdown("**⚠️ UID Conflicts**")
-                            conflict_uids = display_df.groupby('UID').size()
-                            conflict_uids = conflict_uids[conflict_uids > 1].sort_values(ascending=False).head(5)
-                            
-                            if not conflict_uids.empty:
-                                st.write("Top 5 conflicted UIDs:")
-                                for uid, count in conflict_uids.items():
-                                    st.write(f"• UID {uid}: {count} questions")
-                                    
-                                    # Show example conflicts
-                                    examples = display_df[display_df['UID'] == uid]['HEADING_0'].head(2).tolist()
-                                    for example in examples:
-                                        st.write(f"  - {example[:80]}...")
-                else:
-                    st.info("ℹ️ No questions match the selected filters")
             else:
                 st.warning("⚠️ No question bank data available from Snowflake")
         
@@ -2856,9 +2753,20 @@ elif st.session_state.page == "uid_matching":
     # Run UID Matching
     if st.session_state.df_final is None or st.button("🚀 Run UID Matching", type="primary"):
         try:
-            with st.spinner("🔄 Matching UIDs with Snowflake references..."):
+            with st.spinner("🔄 Running optimized UID matching (TF-IDF + Batch Semantic)..."):
                 if st.session_state.question_bank is not None and not st.session_state.question_bank.empty:
+                    # Show optimization info
+                    st.info("⚡ **Performance Optimized:** Using pre-computed embeddings and batch processing for faster matching")
+                    
+                    # Create progress placeholder
+                    progress_placeholder = st.empty()
+                    progress_placeholder.write("📊 Phase 1: TF-IDF similarity calculation...")
+                    
                     st.session_state.df_final = run_uid_match(st.session_state.question_bank, st.session_state.df_target)
+                    
+                    progress_placeholder.write("✅ Matching completed successfully!")
+                    time.sleep(1)
+                    progress_placeholder.empty()
                 else:
                     st.session_state.df_final = st.session_state.df_target.copy()
                     st.session_state.df_final["Final_UID"] = None
